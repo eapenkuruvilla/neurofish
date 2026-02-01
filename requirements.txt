@@ -1,0 +1,6 @@
+numpy
+torch
+zstandard
+cython
+chess
+tqdm
