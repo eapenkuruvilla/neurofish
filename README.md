@@ -136,7 +136,9 @@ neurofish/
    conda env create -f environment.yml
    conda activate neurofish
    ```
-
+   - If anaconda is not available on your machine, you may install the python packages using the command 'pip install -r requirements.txt'
+   
+   
 3. **Build Cython extensions (recommended for performance):**
 
    ```bash
