@@ -248,10 +248,7 @@ cpdef float nnue_evaluate_incremental_int8(
     - Weights are pre-quantized to [-127, 127] as INT8
     - Accumulation is done in INT32 to prevent overflow
     - Result is dequantized using pre-computed combined scale
-
-    # TODO: add actual SIMD intrinsics via cython.parallel or direct C calls
     """
-    # TODO: store accumulators in quantized form for additional speedup
 
     cdef Py_ssize_t i, j
     cdef Py_ssize_t hidden_size = white_accumulator.shape[0]
@@ -364,10 +361,7 @@ cpdef float nnue_evaluate_incremental_int16(
     - Accumulation is done in INT64 to prevent overflow
       (INT32 would overflow: 512 * 32767 * 32767 > 2^31)
     - Result is dequantized using pre-computed combined scale
-
-    # TODO: add actual SIMD intrinsics via cython.parallel or direct C calls
     """
-    # TODO: store accumulators in quantized form for additional speedup
 
     cdef Py_ssize_t i, j
     cdef Py_ssize_t hidden_size = white_accumulator.shape[0]
