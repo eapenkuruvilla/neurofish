@@ -108,13 +108,13 @@ UNSTABLE_MIN_DEPTH = _env_int('UNSTABLE_MIN_DEPTH', 5)  # FIX V4: Minimum depth 
 
 # Time management
 # Tuning of time management should be done playing against stockfish (not using engine_test.py)
-EMERGENCY_TIME_RESERVE = _env_float('EMERGENCY_TIME_RESERVE', 0.50)  # FIX V4: Always keep at least 0.5s
+EMERGENCY_TIME_RESERVE = _env_float('EMERGENCY_TIME_RESERVE', 0.50)  #
 ESTIMATED_BRANCHING_FACTOR = _env_float('ESTIMATED_BRANCHING_FACTOR', 4.0)
 TIME_SAFETY_MARGIN_RATIO = _env_float('TIME_SAFETY_MARGIN_RATIO', 0.45)  # Only start new depth if 70%+ time available
 
-ASPIRATION_WINDOW = _env_int('ASPIRATION_WINDOW', 75)  # FIX V4: Increased from 50
+ASPIRATION_WINDOW = _env_int('ASPIRATION_WINDOW', 75)  #
 MAX_AW_RETRIES = _env_int('MAX_AW_RETRIES', 1)  # Base retries (tactical positions get +1)
-MAX_AW_RETRIES_TACTICAL = _env_int('MAX_AW_RETRIES_TACTICAL', 3)  # FIX V4: More retries for tactical positions
+MAX_AW_RETRIES_TACTICAL = _env_int('MAX_AW_RETRIES_TACTICAL', 3)  # More retries for tactical positions
 
 LMR_MOVE_THRESHOLD = _env_int('LMR_MOVE_THRESHOLD', 2)
 LMR_MIN_DEPTH = _env_int('LMR_MIN_DEPTH', 4)  # minimum depth to apply LMR
