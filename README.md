@@ -150,6 +150,16 @@ neurofish/
    ./build.sh
    cd ..
    ```
+   
+5. **Build the neural network models:**
+   
+   - Follow the instructions given in [nn_train/README](nn_train/README.md)
+
+   
+6. **Download a book file:**
+
+   - Download komodo.bin from https://github.com/gmcheems-org/free-opening-books?tab=readme-ov-file
+   - Copy the downloaded file to the book directory
 
 ## Executing the Program
 

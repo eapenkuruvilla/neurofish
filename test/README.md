@@ -29,6 +29,9 @@ sudo apt-get install stockfish
 git clone https://github.com/cutechess/cutechess.git
 cd cutechess && mkdir build && cd build
 cmake .. && make
+
+# Stockfish NNUE evaluations with 10K positions
+python -m utils.sf_static_eval
 ```
 
 ## Quick Start

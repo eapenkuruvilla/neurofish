@@ -1,0 +1,10 @@
+name: neurofish
+channels:
+  - defaults
+dependencies:
+  - numpy
+  - pytorch
+  - zstandard
+  - cython
+  - chess
+  - tqdm
