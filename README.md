@@ -158,7 +158,6 @@ neurofish/
    - Follow the instructions given in [nn_train/README](nn_train/README.md) to build the NN models if you are willing spend couple of weeks.
    - Alternatively you can download a prebuilt NNUE model from [OneDrive](https://1drv.ms/u/c/4c1b0c9c6e5795c7/IQA7Y1iU7XDJR5qi1FaLGzTRAdRsNe5VygcI0qM0qQb_4Yo?e=wuF7zw).
      - Copy the downloaded nnue.pt to model/nnue directory
-   - A  third option is to disable the use of NN by setting IS_NN_ENABLED=False in the config.py file. Please note that without the NN for position evaluation, the Neurofish will be playing about 500 ELOs below its normal strength.
 
 
 6. **Download a book file:**
