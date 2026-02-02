@@ -55,6 +55,15 @@ OUTFILE=$(mktemp --dry-run "$OUTFILE_TEMPLATE")
 echo "PGN File: $OUTFILE"
 python3 -c "import config"
 
+echo ""$CUTECHESS_PATH"/build/cutechess-cli \
+-engine cmd="$CMD_DIR"/../uci.sh name="$ENGINE_NAME" ponder option.Threads=2 "$DEBUG_FLAG" \
+-engine cmd=stockfish option.UCI_LimitStrength=true option.UCI_Elo="$ELO" name=stockfish"$ELO" \
+-each proto=uci tc=40/120+1 timemargin=9999 \
+-draw movenumber=40 movecount=5 score=50 \
+-resign movecount=3 score=500 twosided=false \
+-maxmoves 100 -recover -games "$GAMES" \
+-pgnout "$OUTFILE""
+
 "$CUTECHESS_PATH"/build/cutechess-cli \
 -engine cmd="$CMD_DIR"/../uci.sh name="$ENGINE_NAME" ponder option.Threads=2 "$DEBUG_FLAG" \
 -engine cmd=stockfish option.UCI_LimitStrength=true option.UCI_Elo="$ELO" name=stockfish"$ELO" \
