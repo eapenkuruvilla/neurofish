@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # ----------------------------
-# Argument validation
+# Argument validation.
 # ----------------------------
 
 if [[ $# -lt 3 ]]; then
