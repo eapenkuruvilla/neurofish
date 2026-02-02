@@ -8,5 +8,6 @@ if [ -f ~/anaconda3/etc/profile.d/conda.sh ]; then
 elif [ -f ~/miniconda3/etc/profile.d/conda.sh ]; then
     source ~/miniconda3/etc/profile.d/conda.sh
     conda activate neurofish
+endif
 
 exec python3 -O uci.py
