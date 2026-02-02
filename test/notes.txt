@@ -1,0 +1,24 @@
+Small vs. Medium vs. Large
+Network Size,Architecture,1st Layer Activation,Loss Func.,Error,WAC Test Result
+small,256-128-64-1,tanh,mse,0.06,213/300,
+large,1024-256-32-1,relu,mae,0.127,210/300
+large,1024-256-32-1,relu,mse,0.045,216/300
+medium,512-256-32-1,relu,mae,0.135,214/300
+small,256-128-32-1,relu,mae,0146,208/300
+
+Relu vs Tanh and MAE vs. MSE
+Network Size,Architecture,1st Layer Activation,Loss Func.,Error,WAC
+medium,512-256-32-1,relu,mae,0.136,234
+medium,512-256-32-1,tanh,mae,0.143,235
+medium,512-256-32-1,relu,mse,0.057,233
+
+IS_BLAS_ENABLED, WAC,SF-2000, SF-2200
+True: 233/300, 2246,2300
+False: v, 2223, 2265
+
+01/31/26
+WAC: 266/ 261/ 266
+ELO: 2292/ 2340/ 2319
+
+2/2/26
+

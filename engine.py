@@ -6,7 +6,6 @@ from collections import namedtuple
 from pathlib import Path
 from typing import List, Tuple, Optional
 import random
-
 import chess
 import chess.polyglot
 import numpy as np

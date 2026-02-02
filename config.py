@@ -61,7 +61,7 @@ IS_BLAS_ENABLED = _env_bool('IS_BLAS_ENABLED', False)
 IS_NN_ENABLED = _env_bool('IS_NN_ENABLED', True)
 NN_TYPE = _env_str('NN_TYPE', "NNUE")
 L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "NONE")  # Options: "NONE" (FP32), "INT8", "INT16"
-FULL_NN_EVAL_FREQ = _env_int('FULL_NN_EVAL_FREQ', 3000)  # Increase to 50_000 after initial testing
+FULL_NN_EVAL_FREQ = _env_int('FULL_NN_EVAL_FREQ', 50000)
 
 # Note when NN related parameters are optimized, use real games as positional understanding will be reflected.
 # The non-NN parameters are primarily about tactics, and they can be quickly tuned using test positions.
@@ -72,16 +72,17 @@ STAND_PAT_MAX_NN_EVAL = _env_int('STAND_PAT_MAX_NN_EVAL',
                                  200)  # Absolute value of stand-pat, below it will trigger a NN evaluation.
 
 # Limit moves examined per QS ply to prevent explosion
-MAX_QS_DEPTH = _env_int('MAX_QS_DEPTH', 22)  # REDUCED from 15 to prevent search explosion
+MAX_QS_DEPTH = _env_int('MAX_QS_DEPTH', 22)  #
 _max_qs_moves_default = [12, 6, 4, 2]
-_max_q_moves_env = os.environ.get('MAX_QS_MOVES')
+_max_q_moves_env = os.environ.get('MAX_QS_MOVES')  # Max QS moves for various depths
 if _max_q_moves_env:
     MAX_QS_MOVES = eval(_max_q_moves_env)
     _overridden_params.append(('MAX_QS_MOVES', _max_qs_moves_default, MAX_QS_MOVES))
 else:
     MAX_QS_MOVES = _max_qs_moves_default
 
-_max_qs_moves_divisor_default = [4, 2.0, 1.33]
+# Divide depths in sections so that MAX_QS_DEPTH can be applied for each section.
+_max_qs_moves_divisor_default = [4.0, 2.0, 1.33]
 _max_q_moves_divisor_env = os.environ.get('MAX_QS_MOVES_DIVISOR')
 if _max_q_moves_divisor_env:
     MAX_QS_MOVES_DIVISOR = eval(_max_q_moves_divisor_env)
@@ -112,7 +113,7 @@ EMERGENCY_TIME_RESERVE = _env_float('EMERGENCY_TIME_RESERVE', 0.40)  #
 ESTIMATED_BRANCHING_FACTOR = _env_float('ESTIMATED_BRANCHING_FACTOR', 4.0)
 TIME_SAFETY_MARGIN_RATIO = _env_float('TIME_SAFETY_MARGIN_RATIO', 0.45)  # Only start new depth if 70%+ time available
 
-ASPIRATION_WINDOW = _env_int('ASPIRATION_WINDOW', 85)  #
+ASPIRATION_WINDOW = _env_int('ASPIRATION_WINDOW', 90)  #
 MAX_AW_RETRIES = _env_int('MAX_AW_RETRIES', 1)  # Base retries (tactical positions get +1)
 MAX_AW_RETRIES_TACTICAL = _env_int('MAX_AW_RETRIES_TACTICAL', 3)  # More retries for tactical positions
 

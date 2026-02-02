@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from typing import Tuple
-
 import chess
 
 from cached_board import CachedBoard, move_to_int

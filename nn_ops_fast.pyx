@@ -3,23 +3,23 @@
 # cython: wraparound=False
 # cython: cdivision=True
 # cython: initializedcheck=False
+# cython: nonecheck=False
+# cython: overflowcheck=False
 """
-Fast NN Inference Operations - Cython Implementation
+Optimized NN Inference Operations - Cython Implementation
 
-This module provides Cython-optimized versions of the hot paths in NN inference:
-- evaluate_incremental (DNN and NNUE)
-- evaluate_incremental_int8 (NNUE with INT8 quantized L1)
-- evaluate_incremental_int16 (NNUE with INT16 quantized L1)
-- update_accumulator
-- clipped_relu_inplace
-
-Compile with: cythonize -i nn_ops_fast.pyx
+Optimizations applied:
+1. Contiguous memory declarations (::1) for better cache usage
+2. Fused operations (bias + clipped_relu in one pass)
+3. Local variable caching to avoid repeated indexing
+4. Compiler hints for auto-vectorization
+5. Minimized Python object interactions in hot paths
 """
 
 import numpy as np
 cimport numpy as np
 cimport cython
-from libc.math cimport fmax, fmin
+from libc.string cimport memcpy
 
 # Type definitions
 DTYPE = np.float32
@@ -30,430 +30,455 @@ ctypedef np.int32_t INT32_t
 ctypedef np.int64_t INT64_t
 
 
+# =============================================================================
+# Core element-wise operations
+# =============================================================================
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cpdef void clipped_relu_inplace(DTYPE_t[:] x) noexcept nogil:
+cpdef void clipped_relu_inplace(DTYPE_t[::1] x) noexcept nogil:
     """In-place clipped ReLU: x = clip(x, 0, 1)"""
     cdef Py_ssize_t i
     cdef Py_ssize_t n = x.shape[0]
+    cdef DTYPE_t val
 
     for i in range(n):
-        if x[i] < 0.0:
+        val = x[i]
+        if val < 0.0:
             x[i] = 0.0
-        elif x[i] > 1.0:
+        elif val > 1.0:
             x[i] = 1.0
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cpdef void clipped_relu_copy(DTYPE_t[:] src, DTYPE_t[:] dst) noexcept nogil:
+cpdef void clipped_relu_copy(DTYPE_t[::1] src, DTYPE_t[::1] dst) noexcept nogil:
     """Copy with clipped ReLU: dst = clip(src, 0, 1)"""
     cdef Py_ssize_t i
     cdef Py_ssize_t n = src.shape[0]
+    cdef DTYPE_t val
 
     for i in range(n):
-        if src[i] < 0.0:
+        val = src[i]
+        if val < 0.0:
             dst[i] = 0.0
-        elif src[i] > 1.0:
+        elif val > 1.0:
             dst[i] = 1.0
         else:
-            dst[i] = src[i]
+            dst[i] = val
 
+
+# =============================================================================
+# Optimized matrix-vector multiply with fused bias and activation
+# =============================================================================
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline void _matmul_bias_crelu(
+    const DTYPE_t[::1] input_vec,
+    const DTYPE_t[:, ::1] weight,  # Row-major: [out_size, in_size]
+    const DTYPE_t[::1] bias,
+    DTYPE_t[::1] output,
+    Py_ssize_t out_size,
+    Py_ssize_t in_size
+) noexcept nogil:
+    """
+    Fused: output = clipped_relu(input @ weight.T + bias)
+
+    Processes 4 output neurons at a time for better instruction pipelining.
+    """
+    cdef Py_ssize_t i, j
+    cdef DTYPE_t sum0, sum1, sum2, sum3
+    cdef Py_ssize_t out_size_4 = (out_size // 4) * 4
+    cdef DTYPE_t val
+
+    # Process 4 outputs at a time (loop unrolling)
+    for i in range(0, out_size_4, 4):
+        sum0 = bias[i]
+        sum1 = bias[i + 1]
+        sum2 = bias[i + 2]
+        sum3 = bias[i + 3]
+
+        for j in range(in_size):
+            val = input_vec[j]
+            sum0 = sum0 + val * weight[i, j]
+            sum1 = sum1 + val * weight[i + 1, j]
+            sum2 = sum2 + val * weight[i + 2, j]
+            sum3 = sum3 + val * weight[i + 3, j]
+
+        # Fused clipped ReLU
+        output[i] = 0.0 if sum0 < 0.0 else (1.0 if sum0 > 1.0 else sum0)
+        output[i + 1] = 0.0 if sum1 < 0.0 else (1.0 if sum1 > 1.0 else sum1)
+        output[i + 2] = 0.0 if sum2 < 0.0 else (1.0 if sum2 > 1.0 else sum2)
+        output[i + 3] = 0.0 if sum3 < 0.0 else (1.0 if sum3 > 1.0 else sum3)
+
+    # Handle remainder
+    for i in range(out_size_4, out_size):
+        sum0 = bias[i]
+        for j in range(in_size):
+            sum0 = sum0 + input_vec[j] * weight[i, j]
+        output[i] = 0.0 if sum0 < 0.0 else (1.0 if sum0 > 1.0 else sum0)
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline float _matmul_bias_scalar(
+    const DTYPE_t[::1] input_vec,
+    const DTYPE_t[:, ::1] weight,  # Shape [1, in_size]
+    const DTYPE_t[::1] bias,
+    Py_ssize_t in_size
+) noexcept nogil:
+    """Final layer: single output, no activation."""
+    cdef Py_ssize_t j
+    cdef float sum_val = bias[0]
+
+    for j in range(in_size):
+        sum_val = sum_val + input_vec[j] * weight[0, j]
+
+    return sum_val
+
+
+# =============================================================================
+# DNN Evaluation
+# =============================================================================
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cpdef float dnn_evaluate_incremental(
-    DTYPE_t[:] accumulator,
-    DTYPE_t[:, :] l2_weight,
-    DTYPE_t[:] l2_bias,
-    DTYPE_t[:, :] l3_weight,
-    DTYPE_t[:] l3_bias,
-    DTYPE_t[:, :] l4_weight,
-    DTYPE_t[:] l4_bias,
-    DTYPE_t[:] l2_buf,
-    DTYPE_t[:] l3_buf,
-    DTYPE_t[:] acc_clipped
+    DTYPE_t[::1] accumulator,
+    DTYPE_t[:, ::1] l2_weight,
+    DTYPE_t[::1] l2_bias,
+    DTYPE_t[:, ::1] l3_weight,
+    DTYPE_t[::1] l3_bias,
+    DTYPE_t[:, ::1] l4_weight,
+    DTYPE_t[::1] l4_bias,
+    DTYPE_t[::1] l2_buf,
+    DTYPE_t[::1] l3_buf,
+    DTYPE_t[::1] acc_clipped
 ) noexcept:
-    """
-    Fast DNN incremental evaluation.
-
-    Performs: accumulator -> clipped_relu -> L2 -> clipped_relu -> L3 -> clipped_relu -> L4
-
-    All intermediate buffers must be pre-allocated.
-    """
-    cdef Py_ssize_t i, j
+    """Fast DNN incremental evaluation with fused operations."""
     cdef Py_ssize_t acc_size = accumulator.shape[0]
     cdef Py_ssize_t l2_size = l2_bias.shape[0]
     cdef Py_ssize_t l3_size = l3_bias.shape[0]
-    cdef float sum_val, output
+    cdef float output
 
-    # Clipped ReLU on accumulator
     with nogil:
-        for i in range(acc_size):
-            if accumulator[i] < 0.0:
-                acc_clipped[i] = 0.0
-            elif accumulator[i] > 1.0:
-                acc_clipped[i] = 1.0
-            else:
-                acc_clipped[i] = accumulator[i]
+        # Clipped ReLU on accumulator
+        clipped_relu_copy(accumulator, acc_clipped)
 
-        # L2: acc_clipped @ l2_weight.T + l2_bias
-        for i in range(l2_size):
-            sum_val = l2_bias[i]
-            for j in range(acc_size):
-                sum_val = sum_val + acc_clipped[j] * l2_weight[i, j]
-            # Clipped ReLU
-            if sum_val < 0.0:
-                l2_buf[i] = 0.0
-            elif sum_val > 1.0:
-                l2_buf[i] = 1.0
-            else:
-                l2_buf[i] = sum_val
+        # L2: fused matmul + bias + clipped_relu
+        _matmul_bias_crelu(acc_clipped, l2_weight, l2_bias, l2_buf, l2_size, acc_size)
 
-        # L3: l2_buf @ l3_weight.T + l3_bias
-        for i in range(l3_size):
-            sum_val = l3_bias[i]
-            for j in range(l2_size):
-                sum_val = sum_val + l2_buf[j] * l3_weight[i, j]
-            # Clipped ReLU
-            if sum_val < 0.0:
-                l3_buf[i] = 0.0
-            elif sum_val > 1.0:
-                l3_buf[i] = 1.0
-            else:
-                l3_buf[i] = sum_val
+        # L3: fused matmul + bias + clipped_relu
+        _matmul_bias_crelu(l2_buf, l3_weight, l3_bias, l3_buf, l3_size, l2_size)
 
-        # L4: l3_buf @ l4_weight.T + l4_bias (no activation)
-        output = l4_bias[0]
-        for j in range(l3_size):
-            output = output + l3_buf[j] * l4_weight[0, j]
+        # L4: final output (no activation)
+        output = _matmul_bias_scalar(l3_buf, l4_weight, l4_bias, l3_size)
 
     return output
 
+
+# =============================================================================
+# NNUE Evaluation (FP32)
+# =============================================================================
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cpdef float nnue_evaluate_incremental(
-    DTYPE_t[:] white_accumulator,
-    DTYPE_t[:] black_accumulator,
-    bint stm,  # True = white to move
-    DTYPE_t[:, :] l1_weight,
-    DTYPE_t[:] l1_bias,
-    DTYPE_t[:, :] l2_weight,
-    DTYPE_t[:] l2_bias,
-    DTYPE_t[:, :] l3_weight,
-    DTYPE_t[:] l3_bias,
-    DTYPE_t[:] hidden_buf,
-    DTYPE_t[:] l1_buf,
-    DTYPE_t[:] l2_buf,
-    DTYPE_t[:] white_clipped,
-    DTYPE_t[:] black_clipped
+    DTYPE_t[::1] white_accumulator,
+    DTYPE_t[::1] black_accumulator,
+    bint stm,
+    DTYPE_t[:, ::1] l1_weight,
+    DTYPE_t[::1] l1_bias,
+    DTYPE_t[:, ::1] l2_weight,
+    DTYPE_t[::1] l2_bias,
+    DTYPE_t[:, ::1] l3_weight,
+    DTYPE_t[::1] l3_bias,
+    DTYPE_t[::1] hidden_buf,
+    DTYPE_t[::1] l1_buf,
+    DTYPE_t[::1] l2_buf,
+    DTYPE_t[::1] white_clipped,
+    DTYPE_t[::1] black_clipped
 ) noexcept:
     """
     Fast NNUE incremental evaluation.
 
-    Performs perspective-based concatenation and forward pass through layers.
+    Optimizations:
+    - Fused clipped_relu + concatenation
+    - Loop unrolling in matmul
+    - All operations in nogil block
     """
-    cdef Py_ssize_t i, j
+    cdef Py_ssize_t i
     cdef Py_ssize_t hidden_size = white_accumulator.shape[0]
     cdef Py_ssize_t concat_size = hidden_size * 2
     cdef Py_ssize_t l1_size = l1_bias.shape[0]
     cdef Py_ssize_t l2_size = l2_bias.shape[0]
-    cdef float sum_val, output
+    cdef DTYPE_t w_val, b_val
+    cdef float output
 
     with nogil:
-        # Clipped ReLU on both accumulators
-        for i in range(hidden_size):
-            if white_accumulator[i] < 0.0:
-                white_clipped[i] = 0.0
-            elif white_accumulator[i] > 1.0:
-                white_clipped[i] = 1.0
-            else:
-                white_clipped[i] = white_accumulator[i]
-
-            if black_accumulator[i] < 0.0:
-                black_clipped[i] = 0.0
-            elif black_accumulator[i] > 1.0:
-                black_clipped[i] = 1.0
-            else:
-                black_clipped[i] = black_accumulator[i]
-
-        # Concatenate based on perspective
-        if stm:  # White to move
+        # Fused clipped_relu + concatenation
+        if stm:  # White to move: [white, black]
             for i in range(hidden_size):
-                hidden_buf[i] = white_clipped[i]
-                hidden_buf[hidden_size + i] = black_clipped[i]
-        else:  # Black to move
+                w_val = white_accumulator[i]
+                b_val = black_accumulator[i]
+                hidden_buf[i] = 0.0 if w_val < 0.0 else (1.0 if w_val > 1.0 else w_val)
+                hidden_buf[hidden_size + i] = 0.0 if b_val < 0.0 else (1.0 if b_val > 1.0 else b_val)
+        else:  # Black to move: [black, white]
             for i in range(hidden_size):
-                hidden_buf[i] = black_clipped[i]
-                hidden_buf[hidden_size + i] = white_clipped[i]
+                w_val = white_accumulator[i]
+                b_val = black_accumulator[i]
+                hidden_buf[i] = 0.0 if b_val < 0.0 else (1.0 if b_val > 1.0 else b_val)
+                hidden_buf[hidden_size + i] = 0.0 if w_val < 0.0 else (1.0 if w_val > 1.0 else w_val)
 
-        # L1: hidden_buf @ l1_weight.T + l1_bias
-        for i in range(l1_size):
-            sum_val = l1_bias[i]
-            for j in range(concat_size):
-                sum_val = sum_val + hidden_buf[j] * l1_weight[i, j]
-            if sum_val < 0.0:
-                l1_buf[i] = 0.0
-            elif sum_val > 1.0:
-                l1_buf[i] = 1.0
-            else:
-                l1_buf[i] = sum_val
+        # L1: 512 -> 32 (fused matmul + bias + crelu)
+        _matmul_bias_crelu(hidden_buf, l1_weight, l1_bias, l1_buf, l1_size, concat_size)
 
-        # L2: l1_buf @ l2_weight.T + l2_bias
-        for i in range(l2_size):
-            sum_val = l2_bias[i]
-            for j in range(l1_size):
-                sum_val = sum_val + l1_buf[j] * l2_weight[i, j]
-            if sum_val < 0.0:
-                l2_buf[i] = 0.0
-            elif sum_val > 1.0:
-                l2_buf[i] = 1.0
-            else:
-                l2_buf[i] = sum_val
+        # L2: 32 -> 32 (fused matmul + bias + crelu)
+        _matmul_bias_crelu(l1_buf, l2_weight, l2_bias, l2_buf, l2_size, l1_size)
 
-        # L3: l2_buf @ l3_weight.T + l3_bias (no activation)
-        output = l3_bias[0]
-        for j in range(l2_size):
-            output = output + l2_buf[j] * l3_weight[0, j]
+        # L3: 32 -> 1 (no activation)
+        output = _matmul_bias_scalar(l2_buf, l3_weight, l3_bias, l2_size)
 
     return output
+
+
+# =============================================================================
+# NNUE Evaluation (INT8 Quantized)
+# =============================================================================
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline void _quantize_to_int8(
+    const DTYPE_t[::1] src,
+    INT8_t[::1] dst,
+    Py_ssize_t n
+) noexcept nogil:
+    """Quantize [0,1] float to [0,127] int8."""
+    cdef Py_ssize_t i
+    cdef float val
+
+    for i in range(n):
+        val = src[i] * 127.0
+        if val < 0.0:
+            dst[i] = 0
+        elif val > 127.0:
+            dst[i] = 127
+        else:
+            dst[i] = <INT8_t>(val + 0.5)
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline void _matmul_int8_dequant_crelu(
+    const INT8_t[::1] input_q,
+    const INT8_t[:, ::1] weight_q,
+    const DTYPE_t[::1] bias,
+    DTYPE_t[::1] output,
+    float combined_scale,
+    Py_ssize_t out_size,
+    Py_ssize_t in_size
+) noexcept nogil:
+    """INT8 matmul with dequantization and fused clipped ReLU."""
+    cdef Py_ssize_t i, j
+    cdef INT32_t sum_q
+    cdef float sum_f
+
+    for i in range(out_size):
+        sum_q = 0
+        for j in range(in_size):
+            sum_q = sum_q + <INT32_t>input_q[j] * <INT32_t>weight_q[i, j]
+
+        # Dequantize + bias + clipped ReLU
+        sum_f = <float>sum_q * combined_scale + bias[i]
+        output[i] = 0.0 if sum_f < 0.0 else (1.0 if sum_f > 1.0 else sum_f)
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cpdef float nnue_evaluate_incremental_int8(
-    DTYPE_t[:] white_accumulator,
-    DTYPE_t[:] black_accumulator,
-    bint stm,  # True = white to move
-    INT8_t[:, :] l1_weight_q,  # INT8 quantized weights
-    DTYPE_t[:] l1_bias,
-    float l1_combined_scale,  # Pre-computed scale: input_scale * weight_scale
-    DTYPE_t[:, :] l2_weight,
-    DTYPE_t[:] l2_bias,
-    DTYPE_t[:, :] l3_weight,
-    DTYPE_t[:] l3_bias,
-    DTYPE_t[:] hidden_buf,    # FP32 buffer for clipped values
-    INT8_t[:] hidden_buf_q,   # INT8 buffer for quantized input
-    DTYPE_t[:] l1_buf,
-    DTYPE_t[:] l2_buf,
-    DTYPE_t[:] white_clipped,
-    DTYPE_t[:] black_clipped
+    DTYPE_t[::1] white_accumulator,
+    DTYPE_t[::1] black_accumulator,
+    bint stm,
+    INT8_t[:, ::1] l1_weight_q,
+    DTYPE_t[::1] l1_bias,
+    float l1_combined_scale,
+    DTYPE_t[:, ::1] l2_weight,
+    DTYPE_t[::1] l2_bias,
+    DTYPE_t[:, ::1] l3_weight,
+    DTYPE_t[::1] l3_bias,
+    DTYPE_t[::1] hidden_buf,
+    INT8_t[::1] hidden_buf_q,
+    DTYPE_t[::1] l1_buf,
+    DTYPE_t[::1] l2_buf,
+    DTYPE_t[::1] white_clipped,
+    DTYPE_t[::1] black_clipped
 ) noexcept:
-    """
-    NNUE incremental evaluation with INT8 quantized L1 layer.
-
-    Quantization scheme:
-    - Input (hidden_buf) is in [0, 1], quantized to [0, 127] as INT8
-    - Weights are pre-quantized to [-127, 127] as INT8
-    - Accumulation is done in INT32 to prevent overflow
-    - Result is dequantized using pre-computed combined scale
-    """
-
-    cdef Py_ssize_t i, j
+    """NNUE evaluation with INT8 quantized L1 layer."""
+    cdef Py_ssize_t i
     cdef Py_ssize_t hidden_size = white_accumulator.shape[0]
     cdef Py_ssize_t concat_size = hidden_size * 2
     cdef Py_ssize_t l1_size = l1_bias.shape[0]
     cdef Py_ssize_t l2_size = l2_bias.shape[0]
-    cdef INT32_t sum_q
-    cdef float sum_val, output, val
+    cdef DTYPE_t w_val, b_val
+    cdef float output
 
     with nogil:
-        # Clipped ReLU on both accumulators
-        for i in range(hidden_size):
-            if white_accumulator[i] < 0.0:
-                white_clipped[i] = 0.0
-            elif white_accumulator[i] > 1.0:
-                white_clipped[i] = 1.0
-            else:
-                white_clipped[i] = white_accumulator[i]
-
-            if black_accumulator[i] < 0.0:
-                black_clipped[i] = 0.0
-            elif black_accumulator[i] > 1.0:
-                black_clipped[i] = 1.0
-            else:
-                black_clipped[i] = black_accumulator[i]
-
-        # Concatenate based on perspective and quantize to INT8
-        if stm:  # White to move
+        # Fused clipped_relu + concatenation
+        if stm:
             for i in range(hidden_size):
-                hidden_buf[i] = white_clipped[i]
-                hidden_buf[hidden_size + i] = black_clipped[i]
-        else:  # Black to move
+                w_val = white_accumulator[i]
+                b_val = black_accumulator[i]
+                hidden_buf[i] = 0.0 if w_val < 0.0 else (1.0 if w_val > 1.0 else w_val)
+                hidden_buf[hidden_size + i] = 0.0 if b_val < 0.0 else (1.0 if b_val > 1.0 else b_val)
+        else:
             for i in range(hidden_size):
-                hidden_buf[i] = black_clipped[i]
-                hidden_buf[hidden_size + i] = white_clipped[i]
+                w_val = white_accumulator[i]
+                b_val = black_accumulator[i]
+                hidden_buf[i] = 0.0 if b_val < 0.0 else (1.0 if b_val > 1.0 else b_val)
+                hidden_buf[hidden_size + i] = 0.0 if w_val < 0.0 else (1.0 if w_val > 1.0 else w_val)
 
-        # Quantize input: [0, 1] -> [0, 127]
-        for i in range(concat_size):
-            val = hidden_buf[i] * 127.0
-            if val < 0.0:
-                hidden_buf_q[i] = 0
-            elif val > 127.0:
-                hidden_buf_q[i] = 127
-            else:
-                hidden_buf_q[i] = <INT8_t>(val + 0.5)  # Round to nearest
+        # Quantize input
+        _quantize_to_int8(hidden_buf, hidden_buf_q, concat_size)
 
-        # L1: Quantized matmul with INT32 accumulation
-        for i in range(l1_size):
-            sum_q = 0
-            for j in range(concat_size):
-                sum_q = sum_q + <INT32_t>hidden_buf_q[j] * <INT32_t>l1_weight_q[i, j]
+        # L1: INT8 matmul + dequant + crelu
+        _matmul_int8_dequant_crelu(
+            hidden_buf_q, l1_weight_q, l1_bias, l1_buf,
+            l1_combined_scale, l1_size, concat_size
+        )
 
-            # Dequantize and add bias
-            sum_val = <float>sum_q * l1_combined_scale + l1_bias[i]
+        # L2: FP32 (fused)
+        _matmul_bias_crelu(l1_buf, l2_weight, l2_bias, l2_buf, l2_size, l1_size)
 
-            # Clipped ReLU
-            if sum_val < 0.0:
-                l1_buf[i] = 0.0
-            elif sum_val > 1.0:
-                l1_buf[i] = 1.0
-            else:
-                l1_buf[i] = sum_val
-
-        # L2: l1_buf @ l2_weight.T + l2_bias (FP32)
-        for i in range(l2_size):
-            sum_val = l2_bias[i]
-            for j in range(l1_size):
-                sum_val = sum_val + l1_buf[j] * l2_weight[i, j]
-            if sum_val < 0.0:
-                l2_buf[i] = 0.0
-            elif sum_val > 1.0:
-                l2_buf[i] = 1.0
-            else:
-                l2_buf[i] = sum_val
-
-        # L3: l2_buf @ l3_weight.T + l3_bias (no activation)
-        output = l3_bias[0]
-        for j in range(l2_size):
-            output = output + l2_buf[j] * l3_weight[0, j]
+        # L3: Final output
+        output = _matmul_bias_scalar(l2_buf, l3_weight, l3_bias, l2_size)
 
     return output
+
+
+# =============================================================================
+# NNUE Evaluation (INT16 Quantized)
+# =============================================================================
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline void _quantize_to_int16(
+    const DTYPE_t[::1] src,
+    INT16_t[::1] dst,
+    Py_ssize_t n
+) noexcept nogil:
+    """Quantize [0,1] float to [0,32767] int16."""
+    cdef Py_ssize_t i
+    cdef float val
+
+    for i in range(n):
+        val = src[i] * 32767.0
+        if val < 0.0:
+            dst[i] = 0
+        elif val > 32767.0:
+            dst[i] = 32767
+        else:
+            dst[i] = <INT16_t>(val + 0.5)
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline void _matmul_int16_dequant_crelu(
+    const INT16_t[::1] input_q,
+    const INT16_t[:, ::1] weight_q,
+    const DTYPE_t[::1] bias,
+    DTYPE_t[::1] output,
+    float combined_scale,
+    Py_ssize_t out_size,
+    Py_ssize_t in_size
+) noexcept nogil:
+    """INT16 matmul with INT64 accumulation, dequantization, and fused clipped ReLU."""
+    cdef Py_ssize_t i, j
+    cdef INT64_t sum_q
+    cdef float sum_f
+
+    for i in range(out_size):
+        sum_q = 0
+        for j in range(in_size):
+            sum_q = sum_q + <INT64_t>input_q[j] * <INT64_t>weight_q[i, j]
+
+        # Dequantize + bias + clipped ReLU
+        sum_f = <float>sum_q * combined_scale + bias[i]
+        output[i] = 0.0 if sum_f < 0.0 else (1.0 if sum_f > 1.0 else sum_f)
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cpdef float nnue_evaluate_incremental_int16(
-    DTYPE_t[:] white_accumulator,
-    DTYPE_t[:] black_accumulator,
-    bint stm,  # True = white to move
-    INT16_t[:, :] l1_weight_q,  # INT16 quantized weights
-    DTYPE_t[:] l1_bias,
-    float l1_combined_scale,  # Pre-computed scale: input_scale * weight_scale
-    DTYPE_t[:, :] l2_weight,
-    DTYPE_t[:] l2_bias,
-    DTYPE_t[:, :] l3_weight,
-    DTYPE_t[:] l3_bias,
-    DTYPE_t[:] hidden_buf,     # FP32 buffer for clipped values
-    INT16_t[:] hidden_buf_q,   # INT16 buffer for quantized input
-    DTYPE_t[:] l1_buf,
-    DTYPE_t[:] l2_buf,
-    DTYPE_t[:] white_clipped,
-    DTYPE_t[:] black_clipped
+    DTYPE_t[::1] white_accumulator,
+    DTYPE_t[::1] black_accumulator,
+    bint stm,
+    INT16_t[:, ::1] l1_weight_q,
+    DTYPE_t[::1] l1_bias,
+    float l1_combined_scale,
+    DTYPE_t[:, ::1] l2_weight,
+    DTYPE_t[::1] l2_bias,
+    DTYPE_t[:, ::1] l3_weight,
+    DTYPE_t[::1] l3_bias,
+    DTYPE_t[::1] hidden_buf,
+    INT16_t[::1] hidden_buf_q,
+    DTYPE_t[::1] l1_buf,
+    DTYPE_t[::1] l2_buf,
+    DTYPE_t[::1] white_clipped,
+    DTYPE_t[::1] black_clipped
 ) noexcept:
-    """
-    NNUE incremental evaluation with INT16 quantized L1 layer.
-
-    Quantization scheme:
-    - Input (hidden_buf) is in [0, 1], quantized to [0, 32767] as INT16
-    - Weights are pre-quantized to [-32767, 32767] as INT16
-    - Accumulation is done in INT64 to prevent overflow
-      (INT32 would overflow: 512 * 32767 * 32767 > 2^31)
-    - Result is dequantized using pre-computed combined scale
-    """
-
-    cdef Py_ssize_t i, j
+    """NNUE evaluation with INT16 quantized L1 layer."""
+    cdef Py_ssize_t i
     cdef Py_ssize_t hidden_size = white_accumulator.shape[0]
     cdef Py_ssize_t concat_size = hidden_size * 2
     cdef Py_ssize_t l1_size = l1_bias.shape[0]
     cdef Py_ssize_t l2_size = l2_bias.shape[0]
-    # FIX: Use INT64 for accumulator to prevent overflow with INT16 quantization
-    # Worst case: 512 * 32767 * 32767 = ~549 billion, exceeds INT32_MAX (~2.1 billion)
-    cdef INT64_t sum_q
-    cdef float sum_val, output, val
+    cdef DTYPE_t w_val, b_val
+    cdef float output
 
     with nogil:
-        # Clipped ReLU on both accumulators
-        for i in range(hidden_size):
-            if white_accumulator[i] < 0.0:
-                white_clipped[i] = 0.0
-            elif white_accumulator[i] > 1.0:
-                white_clipped[i] = 1.0
-            else:
-                white_clipped[i] = white_accumulator[i]
-
-            if black_accumulator[i] < 0.0:
-                black_clipped[i] = 0.0
-            elif black_accumulator[i] > 1.0:
-                black_clipped[i] = 1.0
-            else:
-                black_clipped[i] = black_accumulator[i]
-
-        # Concatenate based on perspective
-        if stm:  # White to move
+        # Fused clipped_relu + concatenation
+        if stm:
             for i in range(hidden_size):
-                hidden_buf[i] = white_clipped[i]
-                hidden_buf[hidden_size + i] = black_clipped[i]
-        else:  # Black to move
+                w_val = white_accumulator[i]
+                b_val = black_accumulator[i]
+                hidden_buf[i] = 0.0 if w_val < 0.0 else (1.0 if w_val > 1.0 else w_val)
+                hidden_buf[hidden_size + i] = 0.0 if b_val < 0.0 else (1.0 if b_val > 1.0 else b_val)
+        else:
             for i in range(hidden_size):
-                hidden_buf[i] = black_clipped[i]
-                hidden_buf[hidden_size + i] = white_clipped[i]
+                w_val = white_accumulator[i]
+                b_val = black_accumulator[i]
+                hidden_buf[i] = 0.0 if b_val < 0.0 else (1.0 if b_val > 1.0 else b_val)
+                hidden_buf[hidden_size + i] = 0.0 if w_val < 0.0 else (1.0 if w_val > 1.0 else w_val)
 
-        # Quantize input: [0, 1] -> [0, 32767]
-        for i in range(concat_size):
-            val = hidden_buf[i] * 32767.0
-            if val < 0.0:
-                hidden_buf_q[i] = 0
-            elif val > 32767.0:
-                hidden_buf_q[i] = 32767
-            else:
-                hidden_buf_q[i] = <INT16_t>(val + 0.5)  # Round to nearest
+        # Quantize input
+        _quantize_to_int16(hidden_buf, hidden_buf_q, concat_size)
 
-        # L1: Quantized matmul with INT64 accumulation (prevents overflow)
-        for i in range(l1_size):
-            sum_q = 0
-            for j in range(concat_size):
-                # Cast to INT64 before multiplication to prevent overflow
-                sum_q = sum_q + <INT64_t>hidden_buf_q[j] * <INT64_t>l1_weight_q[i, j]
+        # L1: INT16 matmul + dequant + crelu
+        _matmul_int16_dequant_crelu(
+            hidden_buf_q, l1_weight_q, l1_bias, l1_buf,
+            l1_combined_scale, l1_size, concat_size
+        )
 
-            # Dequantize and add bias
-            sum_val = <float>sum_q * l1_combined_scale + l1_bias[i]
+        # L2: FP32 (fused)
+        _matmul_bias_crelu(l1_buf, l2_weight, l2_bias, l2_buf, l2_size, l1_size)
 
-            # Clipped ReLU
-            if sum_val < 0.0:
-                l1_buf[i] = 0.0
-            elif sum_val > 1.0:
-                l1_buf[i] = 1.0
-            else:
-                l1_buf[i] = sum_val
-
-        # L2: l1_buf @ l2_weight.T + l2_bias (FP32)
-        for i in range(l2_size):
-            sum_val = l2_bias[i]
-            for j in range(l1_size):
-                sum_val = sum_val + l1_buf[j] * l2_weight[i, j]
-            if sum_val < 0.0:
-                l2_buf[i] = 0.0
-            elif sum_val > 1.0:
-                l2_buf[i] = 1.0
-            else:
-                l2_buf[i] = sum_val
-
-        # L3: l2_buf @ l3_weight.T + l3_bias (no activation)
-        output = l3_bias[0]
-        for j in range(l2_size):
-            output = output + l2_buf[j] * l3_weight[0, j]
+        # L3: Final output
+        output = _matmul_bias_scalar(l2_buf, l3_weight, l3_bias, l2_size)
 
     return output
 
 
+# =============================================================================
+# Accumulator update functions
+# =============================================================================
+
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cpdef void accumulator_add_features(
-    DTYPE_t[:] accumulator,
-    DTYPE_t[:, :] weights,
-    INT64_t[:] features,
+    DTYPE_t[::1] accumulator,
+    DTYPE_t[:, ::1] weights,
+    INT64_t[::1] features,
     Py_ssize_t max_feature
 ) noexcept:
     """Add weight columns for given features to accumulator."""
@@ -472,9 +497,9 @@ cpdef void accumulator_add_features(
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cpdef void accumulator_remove_features(
-    DTYPE_t[:] accumulator,
-    DTYPE_t[:, :] weights,
-    INT64_t[:] features,
+    DTYPE_t[::1] accumulator,
+    DTYPE_t[:, ::1] weights,
+    INT64_t[::1] features,
     Py_ssize_t max_feature
 ) noexcept:
     """Remove weight columns for given features from accumulator."""
@@ -493,30 +518,24 @@ cpdef void accumulator_remove_features(
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cpdef void dnn_update_accumulator(
-    DTYPE_t[:] accumulator,
-    DTYPE_t[:, :] weights,
-    object added_features,  # Set[int]
-    object removed_features,  # Set[int]
+    DTYPE_t[::1] accumulator,
+    DTYPE_t[:, ::1] weights,
+    object added_features,
+    object removed_features,
     Py_ssize_t max_feature
 ) noexcept:
-    """
-    Update DNN accumulator with added/removed features.
-    Uses batched operations for efficiency.
-    """
-    cdef Py_ssize_t i, j, f
+    """Update DNN accumulator with added/removed features."""
+    cdef Py_ssize_t j, f
     cdef Py_ssize_t acc_size = accumulator.shape[0]
     cdef list added_list, removed_list
 
-    # Convert sets to lists for iteration
     added_list = [f for f in added_features if 0 <= f < max_feature]
     removed_list = [f for f in removed_features if 0 <= f < max_feature]
 
-    # Add features
     for f in added_list:
         for j in range(acc_size):
             accumulator[j] = accumulator[j] + weights[j, f]
 
-    # Remove features
     for f in removed_list:
         for j in range(acc_size):
             accumulator[j] = accumulator[j] - weights[j, f]
@@ -525,29 +544,25 @@ cpdef void dnn_update_accumulator(
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cpdef void nnue_update_accumulator(
-    DTYPE_t[:] white_accumulator,
-    DTYPE_t[:] black_accumulator,
-    DTYPE_t[:, :] weights,
-    object added_white,  # Set[int]
-    object removed_white,  # Set[int]
-    object added_black,  # Set[int]
-    object removed_black,  # Set[int]
+    DTYPE_t[::1] white_accumulator,
+    DTYPE_t[::1] black_accumulator,
+    DTYPE_t[:, ::1] weights,
+    object added_white,
+    object removed_white,
+    object added_black,
+    object removed_black,
     Py_ssize_t max_feature
 ) noexcept:
-    """
-    Update NNUE accumulators with added/removed features for both perspectives.
-    """
+    """Update NNUE accumulators with added/removed features."""
     cdef Py_ssize_t j, f
     cdef Py_ssize_t acc_size = white_accumulator.shape[0]
     cdef list aw_list, rw_list, ab_list, rb_list
 
-    # Convert sets to lists
     aw_list = [f for f in added_white if 0 <= f < max_feature]
     rw_list = [f for f in removed_white if 0 <= f < max_feature]
     ab_list = [f for f in added_black if 0 <= f < max_feature]
     rb_list = [f for f in removed_black if 0 <= f < max_feature]
 
-    # White accumulator updates
     for f in aw_list:
         for j in range(acc_size):
             white_accumulator[j] = white_accumulator[j] + weights[j, f]
@@ -555,7 +570,6 @@ cpdef void nnue_update_accumulator(
         for j in range(acc_size):
             white_accumulator[j] = white_accumulator[j] - weights[j, f]
 
-    # Black accumulator updates
     for f in ab_list:
         for j in range(acc_size):
             black_accumulator[j] = black_accumulator[j] + weights[j, f]
@@ -565,22 +579,18 @@ cpdef void nnue_update_accumulator(
 
 
 # =============================================================================
-# Feature index computation (for NNUE)
+# Feature index computation
 # =============================================================================
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cpdef int get_piece_index(int piece_type, bint is_friendly) noexcept nogil:
-    """
-    Convert piece type and color to index (0-9).
-    piece_type: 1=PAWN, 2=KNIGHT, 3=BISHOP, 4=ROOK, 5=QUEEN, 6=KING
-    """
-    if piece_type == 6:  # KING
+    """Convert piece type and color to index (0-9)."""
+    if piece_type == 6:
         return -1
     cdef int type_idx = piece_type - 1
-    # Enemy pieces first
     cdef int color_idx = 1 if is_friendly else 0
-    return type_idx + color_idx * 5  # 5 piece types
+    return type_idx + color_idx * 5
 
 
 @cython.boundscheck(False)
@@ -595,7 +605,6 @@ cpdef int get_nnue_feature_index(
     cdef int piece_idx = get_piece_index(piece_type, is_friendly)
     if piece_idx == -1:
         return -1
-    # king_sq * (64 * 5 * 2) + piece_sq * (5 * 2) + piece_idx
     return king_sq * 640 + piece_sq * 10 + piece_idx
 
 
@@ -616,48 +625,29 @@ cpdef int get_dnn_feature_index(
     bint is_friendly,
     bint perspective
 ) noexcept nogil:
-    """
-    Calculate DNN feature index (768-dimensional encoding).
-
-    Encoding: feature_idx = piece_idx * 64 + oriented_square
-
-    Piece order (matches NNUE): P=0, N=1, B=2, R=3, Q=4, K=5
-    piece_type from python-chess: PAWN=1, KNIGHT=2, BISHOP=3, ROOK=4, QUEEN=5, KING=6
-
-    Planes 0-5: Side-to-move pieces
-    Planes 6-11: Opponent pieces
-    """
+    """Calculate DNN feature index (768-dimensional encoding)."""
     cdef int adj_square = square
     cdef int type_idx, piece_idx
 
-    # Flip square for black's perspective
     if not perspective:
         adj_square = flip_square(square)
 
-    # Map piece type: piece_type - 1 gives P=0, N=1, B=2, R=3, Q=4, K=5
     type_idx = piece_type - 1
-
-    # piece_idx: 0-5 for friendly, 6-11 for opponent
     piece_idx = type_idx + (0 if is_friendly else 6)
 
-    # New encoding: piece_idx * 64 + adj_square
     return piece_idx * 64 + adj_square
 
-
-# =============================================================================
-# Move integer encoding (for fast hashing)
-# =============================================================================
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cpdef int move_to_int_fast(int from_sq, int to_sq, int promo) noexcept nogil:
-    """Convert move to integer key: from_sq | (to_sq << 6) | (promo << 12)"""
+    """Convert move to integer key."""
     return from_sq | (to_sq << 6) | (promo << 12)
 
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cpdef tuple int_to_move_fast(int key) noexcept:
+cpdef tuple int_to_move_fast(int key):
     """Convert integer key back to (from_sq, to_sq, promo) tuple."""
     cdef int from_sq = key & 0x3F
     cdef int to_sq = (key >> 6) & 0x3F

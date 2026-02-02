@@ -7,9 +7,7 @@ NumPy operations. It's used when the Cython extension isn't compiled.
 For best performance, compile the Cython version with:
     python setup.py build_ext --inplace
 """
-
 from typing import Set
-
 import numpy as np
 
 
@@ -57,7 +55,8 @@ def dnn_evaluate_incremental(
     np.minimum(l3_buf, 1, out=l3_buf)
 
     # L4 (no activation)
-    return float(np.dot(l3_buf, l4_weight.T) + l4_bias)
+    result = np.dot(l3_buf, l4_weight.T) + l4_bias
+    return float(np.asarray(result).item())
 
 
 def nnue_evaluate_incremental(
@@ -104,7 +103,8 @@ def nnue_evaluate_incremental(
     np.minimum(l2_buf, 1, out=l2_buf)
 
     # L3 (no activation)
-    return float(np.dot(l2_buf, l3_weight.T) + l3_bias)
+    result = np.dot(l2_buf, l3_weight.T) + l3_bias
+    return float(np.asarray(result).item())
 
 
 def nnue_evaluate_incremental_int8(
@@ -170,7 +170,8 @@ def nnue_evaluate_incremental_int8(
     np.minimum(l2_buf, 1, out=l2_buf)
 
     # L3 (no activation)
-    return float(np.dot(l2_buf, l3_weight.T) + l3_bias)
+    result = np.dot(l2_buf, l3_weight.T) + l3_bias
+    return float(np.asarray(result).item())
 
 
 def nnue_evaluate_incremental_int16(
@@ -237,7 +238,8 @@ def nnue_evaluate_incremental_int16(
     np.minimum(l2_buf, 1, out=l2_buf)
 
     # L3 (no activation)
-    return float(np.dot(l2_buf, l3_weight.T) + l3_bias)
+    result = np.dot(l2_buf, l3_weight.T) + l3_bias
+    return float(np.asarray(result).item())
 
 
 def accumulator_add_features(

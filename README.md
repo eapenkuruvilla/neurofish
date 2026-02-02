@@ -210,15 +210,15 @@ conda activate neurofish
 
 ### DNN vs NNUE Performance Comparison
 
-| Test                                                   | Measurement Unit                  | DNN | NNUE |
-|--------------------------------------------------------|-----------------------------------|-----|------|
-| Time per positional evaluation                         | Milliseconds                      | 0.162 | 0.037 |
-| Training validation error                              | MSE - tanh(CP/410)                | 0.041 | 0.046 |
-| Against Stockfish depth 20+                            | MAE - Difference capped at 100 CP | 54 | 55 |
-| Against Stockfish depth 20+                            | MSE - tanh(CP/410)                | 0.037 | 0.040 |
+| Test                                                   | Measurement Unit                  | DNN                    | NNUE                    |
+|--------------------------------------------------------|-----------------------------------|------------------------|-------------------------|
+| Time per positional evaluation                         | Milliseconds                      | 0.162                  | 0.037                   |
+| Training validation error                              | MSE - tanh(CP/410)                | 0.041                  | 0.046                   |
+| Against Stockfish depth 20+                            | MAE - Difference capped at 100 CP | 54                     | 55                      |
+| Against Stockfish depth 20+                            | MSE - tanh(CP/410)                | 0.037                  | 0.040                   |
 | Against Stockfish NNUE positional evaluation (depth 0) | MAE - Difference capped at 100 CP | 8 (DNN better than SF) | 5 (NNUE better than SF) |
-| Against Stockfish NNUE positional evaluation (depth 0) | MSE - tanh(CP/410)                | 0.021 | 0.0178 |
-| Against Classical piece-square evaluation              | MAE - ELO                         | +500 | +660 |
+| Against Stockfish NNUE positional evaluation (depth 0) | MSE - tanh(CP/410)                | 0.021                  | 0.0178                  |
+| Against Classical piece-square evaluation (ELO 1883)   | MAE - ELO                         | +394                   | +607                    |
 
 **Analysis:** NNUE outperforms DNN in playing strength primarily due to its 4x faster evaluation time, allowing deeper search within the same time constraints. The NNUE architecture's incremental update capability means that after each move, only affected features need recalculation, whereas DNN requires full forward propagation.
 
@@ -237,11 +237,11 @@ Multiprocessing provides diminishing returns beyond 2-4 cores due to Python's Gl
 
 ### Quantization Impact
 
-| Type | ELO |
-|------|-----|
-| FP32 (None) | 2400 |
-| INT16 | 2300 |
-| INT8 | 2300 |
+| Type | ELO  |
+|------|------|
+| FP32 (None) | 9999 |
+| INT16 | 9999 |
+| INT8 | 9999 |
 
 **Analysis:** Quantization did not improve ELO (and actually decreased it slightly) because Python's NumPy operations don't benefit from SIMD-accelerated integer arithmetic the way C++ implementations do. In C++ engines like Stockfish, INT8 quantization enables AVX-512/VNNI instructions that process multiple values simultaneously. In Python, the overhead of type conversions and lack of vectorized integer operations negates any potential speedup, while the reduced precision causes evaluation accuracy loss.
 
@@ -249,8 +249,8 @@ Multiprocessing provides diminishing returns beyond 2-4 cores due to Python's Gl
 
 | Type        | ELO  |
 |-------------|------|
-| chess.Board | 2300 |
-| C++ Board   | 2400 |
+| chess.Board | 9999 |
+| C++ Board   | 9999 |
 
 **Analysis:**  C++ Board (Disservin/chess-library) improved the performance by about 100 ELOs.
 
@@ -258,8 +258,8 @@ Multiprocessing provides diminishing returns beyond 2-4 cores due to Python's Gl
 
 | Type   | ELO  |
 |--------|------|
-| Python | 2300 |
-| Cython | 2400 |
+| Python | 2376 |
+| Cython | 9999 |
 
 **Analysis:**  Cython improved the performance by about 100 ELOs.
 
