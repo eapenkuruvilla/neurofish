@@ -67,9 +67,9 @@ def parse_stockfish_output(output: str) -> Optional[TuneResult]:
     draw_ratio = float(elo_match.group(4)) if elo_match.group(4) != 'nan' else 0.0
 
     # Extract final score line
-    # Example: "Score of Neurofish vs stockfish2200: 17 - 9 - 4  [0.633] 30"
+    # Example: "Score of Neurofish vs stockfish2300: 17 - 9 - 4  [0.633] 30"
     score_match = re.search(
-        r'Score of Neurofish vs stockfish\d+:\s*(\d+)\s*-\s*(\d+)\s*-\s*(\d+)',
+        r'Score of neurofish vs stockfish\d+:\s*(\d+)\s*-\s*(\d+)\s*-\s*(\d+)',
         output
     )
 
@@ -108,7 +108,7 @@ def run_tuning(param_name: str, param_value: str, games: int, elo: int,
     env[param_name] = param_value
 
     # Build command
-    cmd = [script_path, "Neurofish", str(elo), str(games)]
+    cmd = [script_path, str(elo), str(games)]
 
     # Build the command string for display (can be copy/pasted to terminal)
     cmd_display = f"{param_name}={param_value} {' '.join(cmd)}"
@@ -229,8 +229,8 @@ Examples:
     parser.add_argument(
         "--elo", "-e",
         type=int,
-        default=2200,
-        help="Stockfish ELO level (default: 2200)"
+        default=2300,
+        help="Stockfish ELO level (default: 2300)"
     )
 
     parser.add_argument(

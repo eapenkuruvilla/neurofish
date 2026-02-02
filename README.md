@@ -4,7 +4,7 @@ NeuroFish is a hybrid chess engine that combines classical alpha–beta search t
 
 The engine plays at approximately **2500 ELO** rating, making it possibly the highest-rated chess engine written in Python.
 
-**Play against NeuroFish online:** [https://lichess.org/@/neurofish](https://lichess.org/@/neurofish)
+**Play against NeuroFish online:** [https://lichess.org/?user=neurofish#friend](https://lichess.org/?user=neurofish#friend)
 
 ## Project Description
 
@@ -158,6 +158,7 @@ neurofish/
    - Follow the instructions given in [nn_train/README](nn_train/README.md) to build the NN models if you are willing spend couple of weeks.
    - Alternatively you can download a prebuilt NNUE model from [OneDrive](https://1drv.ms/u/c/4c1b0c9c6e5795c7/IQA7Y1iU7XDJR5qi1FaLGzTRAdRsNe5VygcI0qM0qQb_4Yo?e=wuF7zw).
      - Copy the downloaded nnue.pt to model/nnue directory
+   - A third option is to set IS_NN_ENABLED=False in the config.py file, but be willing to sacrifice around 400 ELOs of engine's strength.
 
 
 6. **Download a book file:**
@@ -209,15 +210,15 @@ conda activate neurofish
 
 ### DNN vs NNUE Performance Comparison
 
-| Test | Measurement | DNN | NNUE |
-|------|-------------|-----|------|
-| Time per positional evaluation | Milliseconds | 0.162 | 0.037 |
-| Training validation error | MSE - tanh(CP/410) | 0.041 | 0.046 |
-| Against Stockfish depth 20+ | MAE - Difference capped at 100 CP | 54 | 55 |
-| Against Stockfish depth 20+ | MSE - tanh(CP/410) | 0.037 | 0.040 |
-| Against Stockfish NNUE positional evaluation | MAE - Difference capped at 100 CP | 8 (DNN better than SF) | 5 (NNUE better than SF) |
-| Against Stockfish NNUE positional evaluation | MSE - tanh(CP/410) | 0.021 | 0.0178 |
-| Against Classical piece-square evaluation | MAE - ELO | +500 | +660 |
+| Test                                                   | Measurement Unit                  | DNN | NNUE |
+|--------------------------------------------------------|-----------------------------------|-----|------|
+| Time per positional evaluation                         | Milliseconds                      | 0.162 | 0.037 |
+| Training validation error                              | MSE - tanh(CP/410)                | 0.041 | 0.046 |
+| Against Stockfish depth 20+                            | MAE - Difference capped at 100 CP | 54 | 55 |
+| Against Stockfish depth 20+                            | MSE - tanh(CP/410)                | 0.037 | 0.040 |
+| Against Stockfish NNUE positional evaluation (depth 0) | MAE - Difference capped at 100 CP | 8 (DNN better than SF) | 5 (NNUE better than SF) |
+| Against Stockfish NNUE positional evaluation (depth 0) | MSE - tanh(CP/410)                | 0.021 | 0.0178 |
+| Against Classical piece-square evaluation              | MAE - ELO                         | +500 | +660 |
 
 **Analysis:** NNUE outperforms DNN in playing strength primarily due to its 4x faster evaluation time, allowing deeper search within the same time constraints. The NNUE architecture's incremental update capability means that after each move, only affected features need recalculation, whereas DNN requires full forward propagation.
 
@@ -243,6 +244,24 @@ Multiprocessing provides diminishing returns beyond 2-4 cores due to Python's Gl
 | INT8 | 2300 |
 
 **Analysis:** Quantization did not improve ELO (and actually decreased it slightly) because Python's NumPy operations don't benefit from SIMD-accelerated integer arithmetic the way C++ implementations do. In C++ engines like Stockfish, INT8 quantization enables AVX-512/VNNI instructions that process multiple values simultaneously. In Python, the overhead of type conversions and lack of vectorized integer operations negates any potential speedup, while the reduced precision causes evaluation accuracy loss.
+
+### C++ Board instead of Python-Chess Board
+
+| Type        | ELO  |
+|-------------|------|
+| chess.Board | 2300 |
+| C++ Board   | 2400 |
+
+**Analysis:**  C++ Board (Disservin/chess-library) improved the performance by about 100 ELOs.
+
+### Cython for Position Evaluation
+
+| Type   | ELO  |
+|--------|------|
+| Python | 2300 |
+| Cython | 2400 |
+
+**Analysis:**  Cython improved the performance by about 100 ELOs.
 
 ## Future Work
 

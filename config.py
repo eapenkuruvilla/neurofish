@@ -102,17 +102,17 @@ QS_TT_SUPPORTED = _env_bool('QS_TT_SUPPORTED', False)
 # Minimum depth requirements
 # Tuning of depth adjustment should be done playing against stockfish (not using engine_test.py)
 MIN_NEGAMAX_DEPTH = _env_int('MIN_NEGAMAX_DEPTH', 4)  # Minimum depth before soft_stop is honored
-MIN_PREFERRED_DEPTH = _env_int('MIN_PREFERRED_DEPTH', 5)  # NEW: Preferred minimum depth
+MIN_PREFERRED_DEPTH = _env_int('MIN_PREFERRED_DEPTH', 3)  # NEW: Preferred minimum depth
 TACTICAL_MIN_DEPTH = _env_int('TACTICAL_MIN_DEPTH', 5)  # NEW: Minimum depth for tactical positions
-UNSTABLE_MIN_DEPTH = _env_int('UNSTABLE_MIN_DEPTH', 5)  # FIX V4: Minimum depth when score instability
+UNSTABLE_MIN_DEPTH = _env_int('UNSTABLE_MIN_DEPTH', 4)  # FIX V4: Minimum depth when score instability
 
 # Time management
 # Tuning of time management should be done playing against stockfish (not using engine_test.py)
-EMERGENCY_TIME_RESERVE = _env_float('EMERGENCY_TIME_RESERVE', 0.50)  #
+EMERGENCY_TIME_RESERVE = _env_float('EMERGENCY_TIME_RESERVE', 0.40)  #
 ESTIMATED_BRANCHING_FACTOR = _env_float('ESTIMATED_BRANCHING_FACTOR', 4.0)
 TIME_SAFETY_MARGIN_RATIO = _env_float('TIME_SAFETY_MARGIN_RATIO', 0.45)  # Only start new depth if 70%+ time available
 
-ASPIRATION_WINDOW = _env_int('ASPIRATION_WINDOW', 75)  #
+ASPIRATION_WINDOW = _env_int('ASPIRATION_WINDOW', 85)  #
 MAX_AW_RETRIES = _env_int('MAX_AW_RETRIES', 1)  # Base retries (tactical positions get +1)
 MAX_AW_RETRIES_TACTICAL = _env_int('MAX_AW_RETRIES_TACTICAL', 3)  # More retries for tactical positions
 

@@ -6,14 +6,13 @@ set -euo pipefail
 # Argument validation.
 # ----------------------------
 
-if [[ $# -lt 3 ]]; then
-    echo "Usage: $0 <engine-name> <stockfish-elo> <games> [--debug|-debug]"
+if [[ $# -lt 2 ]]; then
+    echo "Usage: $0 <stockfish-elo> <games> [--debug|-debug]"
     exit 1
 fi
 
-ENGINE_NAME="$1"
-ELO="$2"
-GAMES="$3"
+ELO="$1"
+GAMES="$2"
 
 # Validate numeric arguments
 if ! [[ "$ELO" =~ ^[0-9]+$ ]]; then
@@ -56,7 +55,7 @@ echo "PGN File: $OUTFILE"
 python3 -c "import config"
 
 echo ""$CUTECHESS_PATH"/build/cutechess-cli \
--engine cmd="$CMD_DIR"/../uci.sh name="$ENGINE_NAME" ponder option.Threads=2 "$DEBUG_FLAG" \
+-engine cmd="$CMD_DIR"/../uci.sh name=neurofish ponder option.Threads=2 "$DEBUG_FLAG" \
 -engine cmd=stockfish option.UCI_LimitStrength=true option.UCI_Elo="$ELO" name=stockfish"$ELO" \
 -each proto=uci tc=40/120+1 timemargin=9999 \
 -draw movenumber=40 movecount=5 score=50 \
@@ -65,7 +64,7 @@ echo ""$CUTECHESS_PATH"/build/cutechess-cli \
 -pgnout "$OUTFILE""
 
 "$CUTECHESS_PATH"/build/cutechess-cli \
--engine cmd="$CMD_DIR"/../uci.sh name="$ENGINE_NAME" ponder option.Threads=2 "$DEBUG_FLAG" \
+-engine cmd="$CMD_DIR"/../uci.sh name=neurofish ponder option.Threads=2 "$DEBUG_FLAG" \
 -engine cmd=stockfish option.UCI_LimitStrength=true option.UCI_Elo="$ELO" name=stockfish"$ELO" \
 -each proto=uci tc=40/120+1 timemargin=9999 \
 -draw movenumber=40 movecount=5 score=50 \
