@@ -32,7 +32,7 @@ cd ..
 git clone https://github.com/cutechess/cutechess.git
 cd cutechess && mkdir build && cd build
 cmake .. && make
-cd ../neurofish
+cd ../../neurofish
 
 # Stockfish NNUE evaluations with 10K positions
 python -m utils.sf_static_eval
