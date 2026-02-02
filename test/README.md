@@ -26,9 +26,13 @@ Comprehensive test suite for validating the chess engine, neural network evaluat
 sudo apt-get install stockfish
 
 # cutechess-cli (build from source)
+sudo apt-get update
+sudo apt-get install build-essential cmake qtbase5-dev libqt5svg5-dev
+cd ..
 git clone https://github.com/cutechess/cutechess.git
 cd cutechess && mkdir build && cd build
 cmake .. && make
+cd ../neurofish
 
 # Stockfish NNUE evaluations with 10K positions
 python -m utils.sf_static_eval

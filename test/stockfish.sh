@@ -47,8 +47,8 @@ done
 # ----------------------------
 # Run cutechess
 # ----------------------------
-CUTECHESS_PATH=~/Temp/cutechess
 CMD_DIR="$(dirname "$0")"
+CUTECHESS_PATH="$CMD_DIR"/../cutechess
 OUTFILE_TEMPLATE="/tmp/fileXXXXXX.pgn"
 OUTFILE=$(mktemp --dry-run "$OUTFILE_TEMPLATE")
 

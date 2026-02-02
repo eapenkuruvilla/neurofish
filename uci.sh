@@ -8,9 +8,5 @@ if [ -f ~/anaconda3/etc/profile.d/conda.sh ]; then
 elif [ -f ~/miniconda3/etc/profile.d/conda.sh ]; then
     source ~/miniconda3/etc/profile.d/conda.sh
     conda activate neurofish
-else
-    # Fall back to venv
-    source .venv/bin/activate
-fi
 
 exec python3 -O uci.py
