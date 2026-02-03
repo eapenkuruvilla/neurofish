@@ -40,6 +40,7 @@ ponder_start_time = None  # Time when ponder search started
 ponder_best_move = None  # Best move found during pondering
 ponder_best_score = None  # Score of best move during pondering
 
+
 def record_position_hash(board: chess.Board):
     """Record position in game history using Zobrist hash."""
     key = chess.polyglot.zobrist_hash(board)
@@ -135,6 +136,7 @@ def uci_loop():
             # Stop any ongoing search (including ponder) before processing new position
             if search_thread and search_thread.is_alive():
                 TimeControl.stop_search = True
+                mp_search.stop_parallel_search()  # FIX: Also stop MP workers
                 search_thread.join()
             is_pondering = False
             ponder_fen = None
@@ -271,40 +273,72 @@ def uci_loop():
                 def search_and_report():
                     global resign_counter, is_pondering, ponder_best_move, ponder_best_score
 
+                    diag_print(f"search_and_report starting, is_pondering={is_pondering}, movetime={movetime}")
+
                     # Reset nodes counter before search
                     kpi['nodes'] = 0
 
+                    # FIX: Initialize ponder move with first legal move as fallback
+                    if is_pondering:
+                        try:
+                            temp_board = chess.Board(fen)
+                            legal_moves = list(temp_board.legal_moves)
+                            if legal_moves:
+                                ponder_best_move = legal_moves[0]
+                                ponder_best_score = 0
+                                diag_print(f"Initialized ponder_best_move fallback: {ponder_best_move.uci()}")
+                        except Exception as e:
+                            diag_print(f"Failed to initialize ponder_best_move: {e}")
+
                     # Use parallel search if MP enabled, otherwise single-threaded
-                    if mp_search.is_mp_enabled():
-                        best_move, score, pv, nodes, nps = mp_search.parallel_find_best_move(fen, max_depth=max_depth,
-                                                                                             time_limit=movetime)
-                        # Print final info line for MP search
-                        if pv:
-                            print(
-                                f"info depth {len(pv)} score cp {score} nodes {nodes} nps {nps} pv {' '.join(m.uci() for m in pv)}",
-                                flush=True)
-                    else:
-                        best_move, score, pv, _, _ = find_best_move(fen, max_depth=max_depth, time_limit=movetime)
+                    try:
+                        if mp_search.is_mp_enabled():
+                            diag_print(f"Starting parallel search")
+                            best_move, score, pv, nodes, nps = mp_search.parallel_find_best_move(fen,
+                                                                                                 max_depth=max_depth,
+                                                                                                 time_limit=movetime)
+                            diag_print(f"Parallel search returned: move={best_move}, score={score}")
+                            # Print final info line for MP search
+                            if pv:
+                                print(
+                                    f"info depth {len(pv)} score cp {score} nodes {nodes} nps {nps} pv {' '.join(m.uci() for m in pv)}",
+                                    flush=True)
+                        else:
+                            diag_print(f"Starting single-threaded search")
+                            best_move, score, pv, _, _ = find_best_move(fen, max_depth=max_depth, time_limit=movetime)
+                            diag_print(f"Single-threaded search returned: move={best_move}, score={score}")
+                    except Exception as e:
+                        diag_print(f"Search exception: {e}")
+                        best_move = ponder_best_move
+                        score = ponder_best_score if ponder_best_score is not None else 0
+                        pv = [best_move] if best_move else []
 
                     # Store best move/score from pondering for use on ponderhit
                     if is_pondering:
-                        ponder_best_move = best_move
-                        ponder_best_score = score
+                        if best_move is not None:
+                            ponder_best_move = best_move
+                            ponder_best_score = score
+                            diag_print(f"Updated ponder_best_move: {ponder_best_move.uci()}")
 
                         # If search completed naturally (not from 'stop' command), wait for stop/ponderhit
                         # This prevents "Premature bestmove while pondering" warning
                         if not TimeControl.stop_search and not ponder_hit_pending:
+                            diag_print(f"Waiting for stop/ponderhit")
                             # Wait for either stop or ponderhit
                             while is_pondering and not TimeControl.stop_search and not ponder_hit_pending:
                                 time.sleep(0.01)
 
+                            diag_print(f"Wait ended: stop={TimeControl.stop_search}, hit_pending={ponder_hit_pending}")
+
                             # If ponderhit received while waiting, suppress output (ponderhit handler takes over)
                             if ponder_hit_pending:
+                                diag_print(f"Suppressing output due to ponder_hit_pending")
                                 return
 
                     # If ponderhit was received, suppress output (ponderhit search will output)
                     # But on regular stop (ponder miss), we MUST output bestmove
                     if ponder_hit_pending:
+                        diag_print(f"Suppressing output due to ponder_hit_pending (2)")
                         return
 
                     # Check for resign condition (not when pondering)
@@ -321,26 +355,54 @@ def uci_loop():
 
                     # Extract ponder move from PV if available
                     ponder_move = None
-                    if use_ponder and len(pv) >= 2:
-                        ponder_move = pv[1]
+                    if use_ponder and pv and len(pv) >= 2:
+                        try:
+                            pm = pv[1]
+                            # Handle case where pv contains integers instead of chess.Move
+                            if isinstance(pm, int):
+                                from cached_board import int_to_move
+                                ponder_move = int_to_move(pm)
+                            else:
+                                ponder_move = pm
+                        except Exception as e:
+                            diag_print(f"Error extracting ponder move: {e}")
+                            ponder_move = None
 
-                    if best_move is None or best_move == chess.Move.null():
-                        print("bestmove 0000", flush=True)
-                    elif should_resign:
-                        # Output bestmove with resign indication
-                        # Some GUIs recognize "info string resign", others need manual handling
-                        if ponder_move:
-                            print(f"bestmove {best_move.uci()} ponder {ponder_move.uci()}", flush=True)
+                    diag_print(f"About to output bestmove: {best_move}, ponder_move: {ponder_move}")
+
+                    try:
+                        # Check for null/invalid move - avoid chess.Move.null() due to potential scoping issues
+                        is_null_move = (best_move is None or
+                                        (hasattr(best_move, 'uci') and best_move.uci() == '0000'))
+
+                        if is_null_move:
+                            print("bestmove 0000", flush=True)
+                        elif should_resign:
+                            # Output bestmove with resign indication
+                            # Some GUIs recognize "info string resign", others need manual handling
+                            if ponder_move:
+                                print(f"bestmove {best_move.uci()} ponder {ponder_move.uci()}", flush=True)
+                            else:
+                                print(f"bestmove {best_move.uci()}", flush=True)
+                            print("info string resign", flush=True)
                         else:
-                            print(f"bestmove {best_move.uci()}", flush=True)
-                        print("info string resign", flush=True)
-                    else:
-                        if ponder_move:
-                            print(f"bestmove {best_move.uci()} ponder {ponder_move.uci()}", flush=True)
-                        else:
-                            print(f"bestmove {best_move.uci()}", flush=True)
+                            if ponder_move:
+                                print(f"bestmove {best_move.uci()} ponder {ponder_move.uci()}", flush=True)
+                            else:
+                                print(f"bestmove {best_move.uci()}", flush=True)
+                    except Exception as e:
+                        diag_print(f"Error outputting bestmove: {e}")
+                        # Fallback: output without ponder move
+                        try:
+                            if best_move is not None and hasattr(best_move, 'uci'):
+                                print(f"bestmove {best_move.uci()}", flush=True)
+                            else:
+                                print("bestmove 0000", flush=True)
+                        except:
+                            print("bestmove 0000", flush=True)
 
                     is_pondering = False
+                    diag_print(f"search_and_report finished")
 
                 search_thread = threading.Thread(target=search_and_report)
                 search_thread.start()
@@ -353,6 +415,7 @@ def uci_loop():
 
                 # Stop the ponder search
                 TimeControl.stop_search = True
+                mp_search.stop_parallel_search()  # FIX: Signal MP workers to stop
                 search_thread.join()
 
                 # Reset flags
@@ -418,20 +481,33 @@ def uci_loop():
 
                             kpi['nodes'] = 0
 
-                            # Search with warm TT (clear_tt=False)
-                            if mp_search.is_mp_enabled():
-                                best_move, score, pv, nodes, nps = mp_search.parallel_find_best_move(fen,
-                                                                                                     max_depth=MAX_NEGAMAX_DEPTH,
-                                                                                                     time_limit=ponderhit_time_limit,
-                                                                                                     clear_tt=False)
-                                if pv:
-                                    print(
-                                        f"info depth {len(pv)} score cp {score} nodes {nodes} nps {nps} pv {' '.join(m.uci() for m in pv)}",
-                                        flush=True)
-                            else:
-                                best_move, score, pv, _, _ = find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH,
-                                                                            time_limit=ponderhit_time_limit,
-                                                                            clear_tt=False)
+                            # FIX: Track best move found so far for fallback
+                            best_move = ponder_best_move  # Start with pondered move as fallback
+                            score = ponder_best_score if ponder_best_score is not None else 0
+                            pv = [best_move] if best_move else []
+
+                            try:
+                                # Search with warm TT (clear_tt=False)
+                                if mp_search.is_mp_enabled():
+                                    result = mp_search.parallel_find_best_move(fen,
+                                                                               max_depth=MAX_NEGAMAX_DEPTH,
+                                                                               time_limit=ponderhit_time_limit,
+                                                                               clear_tt=False)
+                                    if result[0] is not None:
+                                        best_move, score, pv, nodes, nps = result
+                                        if pv:
+                                            print(
+                                                f"info depth {len(pv)} score cp {score} nodes {nodes} nps {nps} pv {' '.join(m.uci() for m in pv)}",
+                                                flush=True)
+                                else:
+                                    result = find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH,
+                                                            time_limit=ponderhit_time_limit,
+                                                            clear_tt=False)
+                                    if result[0] is not None:
+                                        best_move, score, pv, _, _ = result
+                            except Exception as e:
+                                diag_print(f"ponderhit_search exception: {e}")
+                                # Use fallback move
 
                             # Check for resign condition
                             should_resign = False
@@ -446,42 +522,92 @@ def uci_loop():
 
                             # Extract ponder move from PV if available
                             ponder_move = None
-                            if use_ponder and len(pv) >= 2:
-                                ponder_move = pv[1]
+                            if use_ponder and pv and len(pv) >= 2:
+                                try:
+                                    pm = pv[1]
+                                    # Handle case where pv contains integers instead of chess.Move
+                                    if isinstance(pm, int):
+                                        from cached_board import int_to_move
+                                        ponder_move = int_to_move(pm)
+                                    else:
+                                        ponder_move = pm
+                                except Exception as e:
+                                    diag_print(f"Error extracting ponder move in ponderhit: {e}")
+                                    ponder_move = None
 
-                            if best_move is None or best_move == chess.Move.null():
-                                print("bestmove 0000", flush=True)
-                            elif should_resign:
-                                if ponder_move:
-                                    print(f"bestmove {best_move.uci()} ponder {ponder_move.uci()}", flush=True)
+                            # FIX: Always output bestmove, even if search was interrupted
+                            try:
+                                # Check for null/invalid move - avoid chess.Move.null() due to potential scoping issues
+                                is_null_move = (best_move is None or
+                                                (hasattr(best_move, 'uci') and best_move.uci() == '0000'))
+
+                                if is_null_move:
+                                    print("bestmove 0000", flush=True)
+                                elif should_resign:
+                                    if ponder_move:
+                                        print(f"bestmove {best_move.uci()} ponder {ponder_move.uci()}", flush=True)
+                                    else:
+                                        print(f"bestmove {best_move.uci()}", flush=True)
+                                    print("info string resign", flush=True)
                                 else:
-                                    print(f"bestmove {best_move.uci()}", flush=True)
-                                print("info string resign", flush=True)
-                            else:
-                                if ponder_move:
-                                    print(f"bestmove {best_move.uci()} ponder {ponder_move.uci()}", flush=True)
-                                else:
-                                    print(f"bestmove {best_move.uci()}", flush=True)
+                                    if ponder_move:
+                                        print(f"bestmove {best_move.uci()} ponder {ponder_move.uci()}", flush=True)
+                                    else:
+                                        print(f"bestmove {best_move.uci()}", flush=True)
+                            except Exception as e:
+                                diag_print(f"Error outputting bestmove in ponderhit: {e}")
+                                try:
+                                    if best_move is not None and hasattr(best_move, 'uci'):
+                                        print(f"bestmove {best_move.uci()}", flush=True)
+                                    else:
+                                        print("bestmove 0000", flush=True)
+                                except:
+                                    print("bestmove 0000", flush=True)
 
                         TimeControl.stop_search = False
                         search_thread = threading.Thread(target=ponderhit_search)
                         search_thread.start()
 
         elif command == "stop":
+            diag_print(f"stop received, is_pondering={is_pondering}, ponder_hit_pending={ponder_hit_pending}")
             TimeControl.stop_search = True
             mp_search.stop_parallel_search()  # Signal MP workers to stop
+
+            thread_finished = False
             if search_thread and search_thread.is_alive():
-                search_thread.join()
-            # On ponder miss (stop during pondering), the search thread outputs bestmove
+                diag_print(f"Waiting for search thread to finish (timeout=2.0)")
+                search_thread.join(timeout=2.0)  # FIX: Add timeout to prevent infinite wait
+                thread_finished = not search_thread.is_alive()
+                diag_print(f"Search thread finished: {thread_finished}")
+                if not thread_finished:
+                    diag_print("Warning: search thread did not terminate in time")
+            else:
+                thread_finished = True
+                diag_print(f"Search thread was not alive")
+
+            # FIX: If search thread didn't finish in time (and thus didn't output bestmove),
+            # we must output bestmove ourselves to satisfy UCI protocol
+            diag_print(
+                f"Checking if we need fallback bestmove: thread_finished={thread_finished}, is_pondering={is_pondering}")
+            if not thread_finished:
+                # Output fallback bestmove if thread is stuck
+                diag_print(f"Outputting fallback bestmove: ponder_best_move={ponder_best_move}")
+                if ponder_best_move:
+                    print(f"bestmove {ponder_best_move.uci()}", flush=True)
+                else:
+                    # Last resort: output null move
+                    print("bestmove 0000", flush=True)
+
             # Reset all ponder state
             is_pondering = False
             ponder_hit_pending = False
+            diag_print(f"stop handling complete")
 
         elif command == "quit":
             TimeControl.stop_search = True
             mp_search.stop_parallel_search()
             if search_thread and search_thread.is_alive():
-                search_thread.join()
+                search_thread.join(timeout=2.0)  # FIX: Add timeout
             mp_search.shutdown_worker_pool()  # Clean shutdown of workers
             break
 
