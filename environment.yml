@@ -8,3 +8,4 @@ dependencies:
   - chess
   - tqdm
   - torch
+  - psutil

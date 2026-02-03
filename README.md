@@ -226,12 +226,12 @@ Interestingly, both NN architectures slightly outperform Stockfish's NNUE in raw
 
 ### Multiprocessing Performance
 
-| Cores | ELO |
-|-------|-----|
-| 1 | 2400 |
-| 2 | 2450 |
-| 4 | 2475 |
-| 6 | 2480 |
+| Cores | ELO  |
+|-------|------|
+| 1 | 2312 |
+| 2 | 9999 |
+| 4 | 9999 |
+| 6 | 9999 |
 
 Multiprocessing provides diminishing returns beyond 2-4 cores due to Python's Global Interpreter Lock (GIL) and inter-process communication overhead.
 
@@ -239,9 +239,9 @@ Multiprocessing provides diminishing returns beyond 2-4 cores due to Python's Gl
 
 | Type | ELO  |
 |------|------|
-| FP32 (None) | 9999 |
+| FP32 (None) | 2312 |
 | INT16 | 9999 |
-| INT8 | 9999 |
+| INT8 | 2358 |
 
 **Analysis:** Quantization did not improve ELO (and actually decreased it slightly) because Python's NumPy operations don't benefit from SIMD-accelerated integer arithmetic the way C++ implementations do. In C++ engines like Stockfish, INT8 quantization enables AVX-512/VNNI instructions that process multiple values simultaneously. In Python, the overhead of type conversions and lack of vectorized integer operations negates any potential speedup, while the reduced precision causes evaluation accuracy loss.
 
@@ -249,12 +249,12 @@ Multiprocessing provides diminishing returns beyond 2-4 cores due to Python's Gl
 
 | Type        | ELO  |
 |-------------|------|
-| chess.Board | 9999 |
-| C++ Board   | 9999 |
+| chess.Board | 2217 |
+| C++ Board   | 2312 |
 
 **Analysis:**  C++ Board (Disservin/chess-library) improved the performance by about 100 ELOs.
 
-### Cython for Position Evaluation
+### Cython for Matrix Multiplication
 
 | Type   | ELO  |
 |--------|------|

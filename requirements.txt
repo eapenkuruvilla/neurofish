@@ -4,3 +4,4 @@ zstandard
 cython
 chess
 tqdm
+psutil

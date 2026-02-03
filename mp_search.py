@@ -19,7 +19,7 @@ from typing import List, Tuple, Optional, Dict
 import chess
 
 from cached_board import CachedBoard
-from config import MAX_MP_CORES
+from config import MAX_MP_CORES, IS_SHARED_TT_MP
 from engine import pv_to_san, is_debug_enabled
 
 

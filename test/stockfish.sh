@@ -50,12 +50,13 @@ CMD_DIR="$(dirname "$0")"
 CUTECHESS_PATH="$CMD_DIR"/../../cutechess
 OUTFILE_TEMPLATE="/tmp/fileXXXXXX.pgn"
 OUTFILE=$(mktemp --dry-run "$OUTFILE_TEMPLATE")
+THREADS=6
 
 echo "PGN File: $OUTFILE"
 python3 -c "import config"
 
 echo ""$CUTECHESS_PATH"/build/cutechess-cli \
--engine cmd="$CMD_DIR"/../uci.sh name=neurofish ponder option.Threads=2 "$DEBUG_FLAG" \
+-engine cmd="$CMD_DIR"/../uci.sh name=neurofish ponder option.Threads=$THREADS "$DEBUG_FLAG" \
 -engine cmd=stockfish option.UCI_LimitStrength=true option.UCI_Elo="$ELO" name=stockfish"$ELO" \
 -each proto=uci tc=40/120+1 timemargin=9999 \
 -draw movenumber=40 movecount=5 score=50 \
@@ -64,7 +65,7 @@ echo ""$CUTECHESS_PATH"/build/cutechess-cli \
 -pgnout "$OUTFILE""
 
 "$CUTECHESS_PATH"/build/cutechess-cli \
--engine cmd="$CMD_DIR"/../uci.sh name=neurofish ponder option.Threads=2 "$DEBUG_FLAG" \
+-engine cmd="$CMD_DIR"/../uci.sh name=neurofish ponder option.Threads="$THREADS" "$DEBUG_FLAG" \
 -engine cmd=stockfish option.UCI_LimitStrength=true option.UCI_Elo="$ELO" name=stockfish"$ELO" \
 -each proto=uci tc=40/120+1 timemargin=9999 \
 -draw movenumber=40 movecount=5 score=50 \
@@ -74,7 +75,4 @@ echo ""$CUTECHESS_PATH"/build/cutechess-cli \
 
 echo "PGN File: $OUTFILE"
 python3 -c "import config"
-
-
-
 
