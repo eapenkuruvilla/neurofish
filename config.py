@@ -58,7 +58,7 @@ IS_DIAGNOSTIC = _env_bool('IS_DIAGNOSTIC', False)  # Master switch for diagnosti
 debug_mode = _env_bool('DEBUG_MODE', False)  # Runtime toggle via UCI "debug on/off"
 
 # Multiprocessing configuration
-MAX_MP_CORES = _env_int('MAX_MP_CORES', psutil.cpu_count(logical=False) - 1)  # 1 or less disables multiprocessing, UCI option "Threads"
+MAX_MP_CORES = _env_int('MAX_MP_CORES', psutil.cpu_count(logical=False))  # 1 or less disables multiprocessing, UCI option "Threads"
 IS_SHARED_TT_MP = _env_bool('IS_SHARED_TT_MP', False)  # Whether to share TT across workers in MP mode
 IS_BLAS_ENABLED = _env_bool('IS_BLAS_ENABLED', False)
 IS_NN_ENABLED = _env_bool('IS_NN_ENABLED', True)

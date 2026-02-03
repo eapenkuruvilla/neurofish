@@ -2,10 +2,11 @@
 """
 Multiprocessing search module for chess engine.
 
-Implements Root Move Splitting:
-- Divide root moves among worker processes
-- Each worker searches its assigned moves to full depth
-- Main process collects results and picks the best
+Implements Coordinated Iterative Deepening with Root Move Splitting:
+- Main process controls depth iteration
+- For each depth: distribute root moves to workers, collect results, check time
+- All workers search the same depth simultaneously
+- Time management decisions happen at coordinator level
 
 Optional Shared TT:
 - When IS_SHARED_TT_MP is True, workers share transposition tables
@@ -18,8 +19,9 @@ from typing import List, Tuple, Optional, Dict
 
 import chess
 
-from cached_board import CachedBoard, int_to_move
-from config import MAX_MP_CORES, IS_SHARED_TT_MP
+from cached_board import CachedBoard, int_to_move, move_to_int
+from config import MAX_MP_CORES, IS_SHARED_TT_MP, MIN_NEGAMAX_DEPTH, TIME_SAFETY_MARGIN_RATIO, \
+    ESTIMATED_BRANCHING_FACTOR
 from engine import pv_to_san, is_debug_enabled
 
 # Module-level setting for shared TT (can be changed at runtime)
@@ -32,16 +34,42 @@ def _mp_diag_print(msg: str):
         print(f"info string {msg}", flush=True)
 
 
+def _validate_pv(fen: str, pv: List[chess.Move]) -> List[chess.Move]:
+    """
+    Validate PV moves are legal. Returns truncated PV at first illegal move.
+    This catches TT corruption or other bugs that produce invalid PVs.
+    """
+    if not pv:
+        return pv
+
+    board = CachedBoard(fen)
+    valid_pv = []
+
+    for move in pv:
+        if move in board.get_legal_moves_list():
+            valid_pv.append(move)
+            board.push(move)
+        else:
+            # Stop at first illegal move
+            _mp_diag_print(f"PV validation: illegal move {move.uci()} at position, truncating")
+            break
+
+    return valid_pv
+
+
 # Worker pool (persistent workers)
 _worker_pool: List[Process] = []
 _work_queues: List[Queue] = []
 _result_queue: Optional[Queue] = None
 _stop_event: Optional[Event] = None
 _shared_alpha: Optional[Value] = None
+
+# Shared tables (optional)
 _manager: Optional[Manager] = None
 _shared_tt: Optional[Dict] = None
 _shared_qs_tt: Optional[Dict] = None
 _shared_dnn_cache: Optional[Dict] = None
+
 _pool_initialized = False
 
 
@@ -166,6 +194,7 @@ def _worker_main(worker_id: int, work_queue: Queue, result_queue: Queue,
                  shared_dnn_cache: Optional[Dict]):
     """
     Main function for each worker process.
+    Workers receive single-depth search tasks and return results.
     """
     import threading
     import engine
@@ -181,7 +210,6 @@ def _worker_main(worker_id: int, work_queue: Queue, result_queue: Queue,
         engine.dnn_eval_cache = shared_dnn_cache
 
     # Monitor thread to propagate stop_event to TimeControl
-    # Runs continuously, doesn't exit
     def stop_monitor():
         while True:
             if stop_event.is_set():
@@ -199,10 +227,14 @@ def _worker_main(worker_id: int, work_queue: Queue, result_queue: Queue,
             if work is None:
                 break
 
-            fen, moves_to_search, depth, time_limit, initial_alpha, search_start_time = work
+            # Unpack work tuple for single-depth search
+            fen, moves_to_search, depth, time_limit, search_start_time, pv_move_int = work
 
-            result = _search_moves(engine, worker_id, fen, moves_to_search, depth, time_limit, initial_alpha,
-                                   stop_event, shared_alpha, search_start_time)
+            result = _search_moves_single_depth(
+                engine, worker_id, fen, moves_to_search, depth,
+                time_limit, search_start_time, pv_move_int,
+                stop_event, shared_alpha
+            )
 
             result_queue.put((worker_id, result))
 
@@ -215,13 +247,16 @@ def _worker_main(worker_id: int, work_queue: Queue, result_queue: Queue,
     print(f"info string Worker {worker_id} stopped", flush=True)
 
 
-def _search_moves(engine, worker_id: int, fen: str, moves: List[chess.Move], max_depth: int,
-                  time_limit: Optional[float], initial_alpha: int, stop_event: Event, shared_alpha: Value,
-                  search_start_time: float) -> Optional[
-    Tuple]:
+def _search_moves_single_depth(
+        engine, worker_id: int, fen: str, moves: List[chess.Move], depth: int,
+        time_limit: Optional[float], search_start_time: float, pv_move_int: int,
+        stop_event: Event, shared_alpha: Value
+) -> Optional[Tuple]:
     """
-    Search a list of root moves using iterative deepening.
+    Search a list of root moves to exactly ONE depth.
     Returns (best_move, best_score, best_pv, nodes) or None if stopped.
+
+    This is the core worker function for coordinated iterative deepening.
     """
     from config import MAX_SCORE
     from cached_board import CachedBoard
@@ -232,113 +267,122 @@ def _search_moves(engine, worker_id: int, fen: str, moves: List[chess.Move], max
     board = CachedBoard(fen)
     engine.nn_evaluator.reset(board)
 
-    # Initialize time control for this worker using SHARED start time
-    # This ensures all workers measure time from the same reference point
+    # Initialize time control using SHARED start time
     engine.TimeControl.time_limit = time_limit
-    engine.TimeControl.start_time = search_start_time  # Use coordinator's start time, not local time
+    engine.TimeControl.start_time = search_start_time
     engine.TimeControl.stop_search = False
     engine.TimeControl.soft_stop = False
 
-    # Set hard_stop_time consistent with single-threaded search
     if time_limit:
-        grace_period = max(time_limit * 0.5, 0.3)  # At least 0.3s or 50% extra
+        grace_period = max(time_limit * 0.5, 0.3)
         engine.TimeControl.hard_stop_time = search_start_time + time_limit + grace_period
     else:
         engine.TimeControl.hard_stop_time = None
 
-    # Clear local heuristics (not shared)
-    for i in range(len(engine.killer_moves)):
-        engine.killer_moves[i] = [None, None]
-    engine.history_heuristic.fill(0)
-
-    # Reset node counter for this worker
+    # Reset node counter for this search
     engine.kpi['nodes'] = 0
 
     best_move = moves[0]
     best_score = -MAX_SCORE
     best_pv = [moves[0]]
-    depth_reached = 0
 
-    try:
-        # Iterative deepening
-        for depth in range(1, max_depth + 1):
-            if stop_event.is_set():
-                break
+    alpha = -MAX_SCORE
+    beta = MAX_SCORE
 
-            engine.check_time()
-            if engine.TimeControl.stop_search or engine.TimeControl.soft_stop:
-                break
+    # Sort moves: PV move first if present
+    sorted_moves = list(moves)
+    if pv_move_int != 0:
+        pv_move = int_to_move(pv_move_int)
+        if pv_move in sorted_moves:
+            sorted_moves.remove(pv_move)
+            sorted_moves.insert(0, pv_move)
 
-            depth_best_move = None
-            depth_best_score = -MAX_SCORE
-            depth_best_pv = []
+    for move_idx, move in enumerate(sorted_moves):
+        if stop_event.is_set():
+            break
 
-            alpha = -MAX_SCORE
-            beta = MAX_SCORE
+        engine.check_time()
+        if engine.TimeControl.stop_search:
+            break
 
-            for move_idx, move in enumerate(moves):
-                if stop_event.is_set():
-                    break
+        # OPTIMIZATION: Read shared alpha from other workers for better pruning
+        # This allows workers to benefit from discoveries made by other workers
+        current_shared = shared_alpha.value
+        if current_shared > alpha:
+            alpha = current_shared
 
-                engine.check_time()
-                if engine.TimeControl.stop_search:
-                    break
+        engine.push_move(board, move, engine.nn_evaluator)
 
-                engine.push_move(board, move, engine.nn_evaluator)
+        try:
+            # Check for draw
+            if engine.is_draw_by_repetition(board):
+                score = engine.get_draw_score(board)
+                child_pv = []
+            else:
+                # Use PVS: full window for first move, null window for rest
+                if move_idx == 0:
+                    score, child_pv = engine.negamax(board, depth - 1, -beta, -alpha, allow_singular=True)
+                    score = -score
+                else:
+                    # Null window search
+                    score, child_pv = engine.negamax(board, depth - 1, -alpha - 1, -alpha, allow_singular=True)
+                    score = -score
+                    # Re-search with full window if it might be better
+                    if score > alpha and not stop_event.is_set():
+                        score, child_pv = engine.negamax(board, depth - 1, -beta, -alpha, allow_singular=True)
+                        score = -score
+        finally:
+            board.pop()
+            engine.nn_evaluator.pop()
 
-                try:
-                    # Check for draw
-                    if engine.is_draw_by_repetition(board):
-                        score = engine.get_draw_score(board)
-                        child_pv = []
-                    else:
-                        # Use PVS: full window for first move, null window for rest
-                        if move_idx == 0:
-                            score, child_pv = engine.negamax(board, depth - 1, -beta, -alpha, allow_singular=True)
-                            score = -score
-                        else:
-                            # Null window search
-                            score, child_pv = engine.negamax(board, depth - 1, -alpha - 1, -alpha, allow_singular=True)
-                            score = -score
-                            # Re-search with full window if it might be better
-                            if score > alpha:
-                                score, child_pv = engine.negamax(board, depth - 1, -beta, -alpha, allow_singular=True)
-                                score = -score
-                finally:
-                    board.pop()
-                    engine.nn_evaluator.pop()
+        if score > best_score:
+            best_score = score
+            best_move = move
+            best_pv = [move] + [int_to_move(m) for m in child_pv if m != 0]
 
-                if score > depth_best_score:
-                    depth_best_score = score
-                    depth_best_move = move
-                    depth_best_pv = [move] + [int_to_move(m) for m in child_pv]
-
-                if score > alpha:
-                    alpha = score
-                    if score > shared_alpha.value:
-                        shared_alpha.value = score
-
-            # Save completed depth results
-            if depth_best_move is not None:
-                best_move = depth_best_move
-                best_score = depth_best_score
-                best_pv = depth_best_pv
-                depth_reached = depth
-
-    except TimeoutError:
-        pass
+        if score > alpha:
+            alpha = score
+            # Update shared alpha for other workers
+            if score > shared_alpha.value:
+                shared_alpha.value = score
 
     total_nodes = engine.kpi['nodes']
+    return (best_move, best_score, best_pv, total_nodes)
 
-    return (best_move, best_score, best_pv, total_nodes, depth_reached)
+
+def _collect_results_with_timeout(expected_workers: int, timeout: float) -> List[Tuple]:
+    """
+    Collect results from workers with a timeout.
+    Returns list of results (may be fewer than expected if timeout).
+    """
+    results = []
+    workers_done = 0
+    deadline = time.perf_counter() + timeout
+
+    while workers_done < expected_workers:
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            break
+        try:
+            worker_id, result = _result_queue.get(timeout=min(0.1, remaining))
+            workers_done += 1
+            if result is not None:
+                results.append(result)
+        except:
+            pass  # Queue.get timeout
+
+    return results
 
 
 def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[float] = None, clear_tt: bool = True) -> \
         Tuple[Optional[chess.Move], int, List[chess.Move], int, float]:
     """
-    Find best move using parallel root move splitting.
+    Find best move using coordinated iterative deepening with parallel root move splitting.
 
-    If MAX_MP_CORES <= 1 or pool not initialized, falls back to single-threaded search.
+    The main process controls depth iteration:
+    - For each depth, distribute moves to workers
+    - Collect results after all workers complete (or timeout)
+    - Check time before proceeding to next depth
 
     Returns:
         Tuple of (best_move, score, pv, nodes, nps)
@@ -350,7 +394,6 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         import engine
         return engine.find_best_move(fen, max_depth=max_depth, time_limit=time_limit, clear_tt=clear_tt)
 
-    from cached_board import CachedBoard
     from config import MAX_SCORE
     import engine
 
@@ -362,13 +405,9 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
             _shared_tt.clear()
         if _shared_qs_tt is not None:
             _shared_qs_tt.clear()
-        # Keep dnn_cache (evaluations are always valid)
 
     # Reset stop event
     _stop_event.clear()
-
-    # Reset shared alpha
-    _shared_alpha.value = -MAX_SCORE
 
     # Get legal moves
     board = CachedBoard(fen)
@@ -381,82 +420,163 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         # Only one legal move - no need for parallel search
         return engine.find_best_move(fen, max_depth=max_depth, time_limit=time_limit, clear_tt=clear_tt)
 
-    # Order moves for better distribution
+    # Initial move ordering
     ordered_int = engine.ordered_moves_int(board, max_depth, pv_move_int=0, tt_move_int=0)
     ordered = [int_to_move(m) for m in ordered_int]
 
-    # Distribute moves among workers
+    # Track overall best result
+    best_move = ordered[0]
+    best_score = -MAX_SCORE
+    best_pv = [ordered[0]]
+    total_nodes = 0
+    last_depth_completed = 0
+    last_depth_time = 0.0  # Time taken for last completed depth
+
     num_workers = min(len(_worker_pool), len(ordered))
-    move_assignments = [[] for _ in range(num_workers)]
 
-    for i, move in enumerate(ordered):
-        worker_idx = i % num_workers
-        move_assignments[worker_idx].append(move)
+    # Coordinated iterative deepening with YBWC
+    for depth in range(1, max_depth + 1):
+        depth_start_time = time.perf_counter()
 
-    # Send work to workers
-    initial_alpha = -MAX_SCORE
-    for i in range(num_workers):
-        if move_assignments[i]:
-            # Pass start_time so workers can track time from the same reference point
-            work = (fen, move_assignments[i], max_depth, time_limit, initial_alpha, start_time)
-            _work_queues[i].put(work)
+        # Check if we should stop before starting this depth
+        if _stop_event.is_set():
+            _mp_diag_print(f"Stop event set before depth {depth}")
+            break
 
-    # Collect results
-    results = []
-    workers_done = 0
-    expected_workers = sum(1 for m in move_assignments if m)
+        elapsed = time.perf_counter() - start_time
 
-    while workers_done < expected_workers:
-        try:
-            worker_id, result = _result_queue.get(timeout=0.5)
-            workers_done += 1
-            if result is not None:
-                results.append(result)
-                _mp_diag_print(f"Collected result from worker {worker_id}: {result[0].uci()} "
-                               f"score={result[1]} depth={result[4]}")
-        except:
-            # Check for timeout
-            if time_limit and (time.perf_counter() - start_time) >= time_limit:
-                _mp_diag_print("Time limit reached, stopping workers")
-                _stop_event.set()
+        # Time management: check if we have enough time for this depth
+        if time_limit and depth > MIN_NEGAMAX_DEPTH:
+            remaining = time_limit - elapsed
+            # Estimate time for this depth based on branching factor
+            estimated_time = last_depth_time * ESTIMATED_BRANCHING_FACTOR if last_depth_time > 0 else 0.1
 
-                # IMPORTANT: Wait for workers to finish and report (up to 0.5 seconds)
-                # FIXED: Reduced from 5 seconds to prevent time overruns
-                grace_period = 0.5
-                grace_start = time.perf_counter()
+            # Don't start new depth if we probably can't finish
+            if remaining < estimated_time * TIME_SAFETY_MARGIN_RATIO:
+                _mp_diag_print(
+                    f"Stopping before depth {depth}: remaining={remaining:.2f}s, estimated={estimated_time:.2f}s")
+                break
 
-                while workers_done < expected_workers:
-                    remaining = grace_period - (time.perf_counter() - grace_start)
-                    if remaining <= 0:
-                        _mp_diag_print(f"Grace period expired, {expected_workers - workers_done} workers didn't report")
-                        break
-                    try:
-                        worker_id, result = _result_queue.get(timeout=min(0.5, remaining))
-                        workers_done += 1
-                        if result is not None:
-                            results.append(result)
-                            _mp_diag_print(f"Collected result from worker {worker_id}: {result[0].uci()} "
-                                           f"score={result[1]} depth={result[4]}")
-                    except:
-                        pass  # Keep waiting
+        # Get PV move from previous depth
+        pv_move = best_pv[0] if best_pv else ordered[0]
+        pv_move_int = move_to_int(pv_move)
 
-                break  # Exit main loop after grace period
+        # ============================================================
+        # YBWC Phase 1: Search PV move with worker 0 only
+        # ============================================================
+        _shared_alpha.value = -MAX_SCORE
 
-    if workers_done < expected_workers:
-        _mp_diag_print(f"Not all workers responded, reported={workers_done}, expected={expected_workers}")
+        # Send PV move to worker 0
+        work = (fen, [pv_move], depth, time_limit, start_time, pv_move_int)
+        _work_queues[0].put(work)
 
-    # Pick best result (highest score)
-    if not results:
-        # Fallback - shouldn't happen
-        return engine.find_best_move(fen, max_depth=max_depth, time_limit=time_limit, clear_tt=clear_tt)
+        # Wait for worker 0 to complete PV search
+        pv_timeout = time_limit - (time.perf_counter() - start_time) + 0.5 if time_limit else 60.0
+        pv_results = _collect_results_with_timeout(1, max(0.1, pv_timeout))
 
-    best_result = max(results, key=lambda r: r[1])  # r[1] is score
-    best_move, best_score, best_pv, _, _ = best_result
+        if not pv_results:
+            _mp_diag_print(f"No PV result for depth {depth}, aborting")
+            break
 
-    # Calculate total nodes and NPS
-    total_nodes = sum(r[3] for r in results)
+        # Extract PV result
+        pv_result = pv_results[0]
+        pv_score = pv_result[1]
+        pv_nodes = pv_result[3]
+
+        # Update shared alpha with PV score - this is the key to YBWC!
+        _shared_alpha.value = pv_score
+
+        _mp_diag_print(f"Depth {depth} PV phase: {pv_move.uci()} score={pv_score} nodes={pv_nodes}")
+
+        # ============================================================
+        # YBWC Phase 2: Search remaining moves with all workers
+        # ============================================================
+        remaining_moves = [m for m in ordered if m != pv_move]
+
+        if remaining_moves:
+            # Distribute remaining moves among ALL workers
+            move_assignments = [[] for _ in range(num_workers)]
+            for i, move in enumerate(remaining_moves):
+                worker_idx = i % num_workers
+                move_assignments[worker_idx].append(move)
+
+            # Dispatch to all workers
+            workers_used = 0
+            for i in range(num_workers):
+                if move_assignments[i]:
+                    work = (fen, move_assignments[i], depth, time_limit, start_time, pv_move_int)
+                    _work_queues[i].put(work)
+                    workers_used += 1
+
+            # Collect results from all workers
+            if time_limit:
+                remaining_time = time_limit - (time.perf_counter() - start_time)
+                phase2_timeout = max(0.1, remaining_time + 0.5)
+            else:
+                phase2_timeout = 300.0
+
+            phase2_results = _collect_results_with_timeout(workers_used, phase2_timeout)
+
+            # Combine PV result with phase 2 results
+            all_results = [pv_result] + phase2_results
+        else:
+            # Only one legal move - PV result is all we need
+            all_results = [pv_result]
+
+        depth_time = time.perf_counter() - depth_start_time
+        depth_nodes = sum(r[3] for r in all_results)
+        total_nodes += depth_nodes
+
+        # Find best result from this depth
+        depth_best = max(all_results, key=lambda r: r[1])
+
+        # Check if depth completed successfully
+        # For YBWC, we consider it complete if PV finished and we got all phase 2 results
+        if remaining_moves:
+            expected_phase2 = sum(1 for m in move_assignments if m)
+            got_phase2 = len(all_results) - 1  # Subtract PV result
+        else:
+            expected_phase2 = 0
+            got_phase2 = 0
+
+        if got_phase2 >= expected_phase2:
+            # Full depth completed
+            best_move, best_score, best_pv, _ = depth_best
+            # Validate PV to catch TT corruption or other bugs
+            best_pv = _validate_pv(fen, best_pv)
+            # Ensure best_move matches PV
+            if best_pv:
+                best_move = best_pv[0]
+            last_depth_completed = depth
+            last_depth_time = depth_time
+
+            # Print info line for this depth
+            elapsed = time.perf_counter() - start_time
+            nps = int(total_nodes / elapsed) if elapsed > 0 else 0
+            pv_str = ' '.join(m.uci() for m in best_pv)
+            print(f"info depth {depth} score cp {best_score} nodes {total_nodes} nps {nps} pv {pv_str}", flush=True)
+        else:
+            _mp_diag_print(f"Depth {depth} incomplete: got {got_phase2}/{expected_phase2} phase2 results")
+            # Still use partial results if they're better
+            if depth_best[1] > best_score:
+                best_move, best_score, best_pv, _ = depth_best
+                # Validate PV
+                best_pv = _validate_pv(fen, best_pv)
+                if best_pv:
+                    best_move = best_pv[0]
+
+        # Check time after depth completion
+        if time_limit:
+            elapsed = time.perf_counter() - start_time
+            if elapsed >= time_limit:
+                _mp_diag_print(f"Time limit reached after depth {depth}")
+                break
+
+    # Final statistics
     elapsed = time.perf_counter() - start_time
     nps = int(total_nodes / elapsed) if elapsed > 0 else 0
+
+    _mp_diag_print(f"Search complete: depth={last_depth_completed}, nodes={total_nodes}, time={elapsed:.2f}s")
 
     return (best_move, best_score, best_pv, total_nodes, nps)
 
@@ -509,11 +629,10 @@ def clear_shared_tables():
 def main():
     """
     Interactive loop to input FEN positions and get the best move and evaluation.
-    Tracks KPIs and handles timeouts and interruptions gracefully.
     """
     set_mp_cores(MAX_MP_CORES)
     set_shared_tt(IS_SHARED_TT_MP)
-    time.sleep(1)  # Wait for workers to start
+    time.sleep(0.5)  # Wait for workers to start
 
     try:
         while True:
@@ -525,11 +644,9 @@ def main():
                     print("Type 'exit' or 'quit' to quit")
                     continue
 
-                # Start timer
                 clear_shared_tables()
                 move, score, pv, total_nodes, nps = parallel_find_best_move(fen, max_depth=20, time_limit=30)
 
-                # Print KPIs
                 print(f"nodes: {total_nodes}")
                 print(f"nps: {nps}")
 
@@ -544,17 +661,14 @@ def main():
                 print("\nKeyboardInterrupt detected. Exiting ...")
                 break
             except EOFError:
-                # Handle Ctrl+D / EOF
                 print("\nEOF detected. Exiting ...")
                 break
             except Exception as e:
                 print(f"Exception {str(e)}")
                 import traceback
                 traceback.print_exc()
-                # Don't exit on exception - allow user to try another position
                 continue
     finally:
-        # Always cleanup workers on exit
         print("Shutting down workers...")
         stop_parallel_search()
         shutdown_worker_pool()
