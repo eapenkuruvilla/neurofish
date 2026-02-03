@@ -245,6 +245,21 @@ Multiprocessing provides diminishing returns beyond 2-4 cores due to Python's Gl
 
 **Analysis:** Quantization did not improve ELO (and actually decreased it slightly) because Python's NumPy operations don't benefit from SIMD-accelerated integer arithmetic the way C++ implementations do. In C++ engines like Stockfish, INT8 quantization enables AVX-512/VNNI instructions that process multiple values simultaneously. In Python, the overhead of type conversions and lack of vectorized integer operations negates any potential speedup, while the reduced precision causes evaluation accuracy loss.
 
+### ELO Gains by Various Features
+
+| Type                              | ELO Change |
+|-----------------------------------|------------|
+| Quantization INT8                 | +46        |
+| Quantization INT16                | TBD        |
+| C++ Board                         | +95        |
+| Cython acceleration               | TBD        |
+| BLAS without multiprocessing      | +35        |
+| BLAS with 6 cores multiprocessing | TBD        |
+
+
+**Analysis:**  C++ Board (Disservin/chess-library) improved the performance by about 100 ELOs.
+
+
 ### C++ Board instead of Python-Chess Board
 
 | Type        | ELO  |

@@ -63,7 +63,7 @@ IS_SHARED_TT_MP = _env_bool('IS_SHARED_TT_MP', False)  # Whether to share TT acr
 IS_BLAS_ENABLED = _env_bool('IS_BLAS_ENABLED', False)
 IS_NN_ENABLED = _env_bool('IS_NN_ENABLED', True)
 NN_TYPE = _env_str('NN_TYPE', "NNUE")
-L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "NONE")  # Options: "NONE" (FP32), "INT8", "INT16"
+L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "INT8")  # Options: "NONE" (FP32), "INT8", "INT16"
 FULL_NN_EVAL_FREQ = _env_int('FULL_NN_EVAL_FREQ', 50000)
 
 # Note when NN related parameters are optimized, use real games as positional understanding will be reflected.
