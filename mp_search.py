@@ -10,6 +10,10 @@ Implements Root Move Splitting:
 Optional Shared TT:
 - When IS_SHARED_TT_MP is True, workers share transposition tables
 - Uses multiprocessing.Manager().dict() for simplicity
+
+FIX: Uses shared generation counter to ensure workers abort stale searches
+before processing new work. This prevents the race condition where
+_stop_event.clear() happens before workers see _stop_event.set().
 """
 
 import time
@@ -41,7 +45,10 @@ _shared_tt: Optional[Dict] = None
 _shared_qs_tt: Optional[Dict] = None
 _shared_dnn_cache: Optional[Dict] = None
 _pool_initialized = False
-_search_generation = 0  # Incremented each search to identify stale results
+
+# FIX: Shared generation counter (lock=False for fast reads by workers)
+# Only main thread writes, workers only read - safe without lock
+_search_generation: Optional[Value] = None
 
 
 def init_worker_pool(num_workers: int):
@@ -51,7 +58,7 @@ def init_worker_pool(num_workers: int):
     """
     global _worker_pool, _work_queues, _result_queue, _stop_event
     global _shared_alpha, _manager, _shared_tt, _shared_qs_tt, _shared_dnn_cache
-    global _pool_initialized
+    global _pool_initialized, _search_generation
 
     if _pool_initialized:
         shutdown_worker_pool()
@@ -66,6 +73,9 @@ def init_worker_pool(num_workers: int):
     _stop_event = Event()
     _result_queue = Queue()
     _shared_alpha = Value('i', -100000)  # Shared best alpha (int, centipawns)
+
+    # FIX: Shared generation counter - no lock needed (single writer, multiple readers)
+    _search_generation = Value('i', 0, lock=False)
 
     # Create shared TT if enabled
     if IS_SHARED_TT_MP:
@@ -91,7 +101,7 @@ def init_worker_pool(num_workers: int):
         p = Process(
             target=_worker_main,
             args=(i, work_queue, _result_queue, _stop_event, _shared_alpha,
-                  _shared_tt, _shared_qs_tt, _shared_dnn_cache),
+                  _shared_tt, _shared_qs_tt, _shared_dnn_cache, _search_generation),
             daemon=True
         )
         p.start()
@@ -104,7 +114,7 @@ def init_worker_pool(num_workers: int):
 def shutdown_worker_pool():
     """Shutdown all workers cleanly."""
     global _worker_pool, _work_queues, _result_queue, _stop_event
-    global _manager, _pool_initialized
+    global _manager, _pool_initialized, _search_generation
 
     if not _pool_initialized:
         return
@@ -147,9 +157,12 @@ def shutdown_worker_pool():
 def _worker_main(worker_id: int, work_queue: Queue, result_queue: Queue,
                  stop_event: Event, shared_alpha: Value,
                  shared_tt: Optional[Dict], shared_qs_tt: Optional[Dict],
-                 shared_dnn_cache: Optional[Dict]):
+                 shared_dnn_cache: Optional[Dict], search_generation: Value):
     """
     Main function for each worker process.
+
+    FIX: Now receives search_generation Value to detect stale work.
+    Monitor thread checks both stop_event AND generation staleness.
     """
     import threading
     import engine
@@ -164,13 +177,30 @@ def _worker_main(worker_id: int, work_queue: Queue, result_queue: Queue,
     if shared_dnn_cache is not None:
         engine.dnn_eval_cache = shared_dnn_cache
 
-    # Monitor thread to propagate stop_event to TimeControl
-    # Runs continuously, doesn't exit
+    # Track current generation this worker is processing
+    # Using a list as a mutable container accessible from nested function
+    current_gen_holder = [None]
+
+    # Monitor thread to propagate stop signals to TimeControl
+    # FIX: Now checks BOTH stop_event AND generation staleness
     def stop_monitor():
         while True:
+            should_stop = False
+
+            # Check explicit stop event
             if stop_event.is_set():
+                should_stop = True
+
+            # FIX: Check if our current search is stale (generation changed)
+            # This catches the race where clear() happens before we see set()
+            current_gen = current_gen_holder[0]
+            if current_gen is not None and current_gen != search_generation.value:
+                should_stop = True
+
+            if should_stop:
                 engine.TimeControl.stop_search = True
-            time.sleep(0.02)  # Check every 20ms
+
+            time.sleep(0.01)  # Check every 10ms (was 20ms)
 
     monitor_thread = threading.Thread(target=stop_monitor, daemon=True)
     monitor_thread.start()
@@ -191,16 +221,25 @@ def _worker_main(worker_id: int, work_queue: Queue, result_queue: Queue,
                 fen, moves_to_search, depth, time_limit, initial_alpha = work
                 generation = 0
 
-            # FIX: Reset stop flag before starting new search
+            # FIX: Check if work is already stale before starting
+            if generation != search_generation.value:
+                _mp_diag_print(
+                    f"Worker {worker_id} skipping stale work (gen {generation} != {search_generation.value})")
+                continue
+
+            # FIX: Update current generation so monitor thread knows what we're working on
+            current_gen_holder[0] = generation
+
+            # Reset stop flag before starting new search
             engine.TimeControl.stop_search = False
 
             # Pass result_queue and generation for per-depth reporting
             result = _search_moves(engine, worker_id, fen, moves_to_search, depth, time_limit, initial_alpha,
-                                   stop_event, shared_alpha, result_queue, generation)
+                                   stop_event, shared_alpha, result_queue, generation, search_generation)
 
-            # Final result already reported per-depth, but send end marker
-            # This signals the worker has completely finished this search
-            result_queue.put((worker_id, result, generation))
+            # FIX: Only report final result if still current generation
+            if generation == search_generation.value:
+                result_queue.put((worker_id, result, generation))
 
         except Exception as e:
             import traceback
@@ -213,11 +252,14 @@ def _worker_main(worker_id: int, work_queue: Queue, result_queue: Queue,
 
 def _search_moves(engine, worker_id: int, fen: str, moves: List[chess.Move], max_depth: int,
                   time_limit: Optional[float], initial_alpha: int, stop_event: Event, shared_alpha: Value,
-                  result_queue: Queue = None, generation: int = 0) -> Optional[Tuple]:
+                  result_queue: Queue = None, generation: int = 0,
+                  search_generation: Value = None) -> Optional[Tuple]:
     """
     Search a list of root moves using iterative deepening.
     Reports results after each completed depth via result_queue.
     Returns (best_move, best_score, best_pv, nodes, depth) or None if stopped.
+
+    FIX: Now receives search_generation to check for staleness during search.
     """
     from config import MAX_SCORE
     from cached_board import CachedBoard
@@ -247,10 +289,17 @@ def _search_moves(engine, worker_id: int, fen: str, moves: List[chess.Move], max
     best_pv = [moves[0]]
     depth_reached = 0
 
+    def is_stale() -> bool:
+        """Check if this search has become stale (new search started)."""
+        if search_generation is None:
+            return False
+        return generation != search_generation.value
+
     try:
         # Iterative deepening
         for depth in range(1, max_depth + 1):
-            if stop_event.is_set():
+            # FIX: Check staleness in addition to stop_event
+            if stop_event.is_set() or is_stale():
                 break
 
             engine.check_time()
@@ -266,7 +315,8 @@ def _search_moves(engine, worker_id: int, fen: str, moves: List[chess.Move], max
             beta = MAX_SCORE
 
             for move_idx, move in enumerate(moves):
-                if stop_event.is_set():
+                # FIX: Check staleness in move loop
+                if stop_event.is_set() or is_stale():
                     break
 
                 engine.check_time()
@@ -309,7 +359,11 @@ def _search_moves(engine, worker_id: int, fen: str, moves: List[chess.Move], max
                         shared_alpha.value = score
 
             # Check if depth was fully completed (all moves searched without abort)
-            if depth_best_move is not None and not stop_event.is_set() and not engine.TimeControl.stop_search:
+            # FIX: Also check staleness
+            if (depth_best_move is not None and
+                    not stop_event.is_set() and
+                    not engine.TimeControl.stop_search and
+                    not is_stale()):
                 depth_completed = True
 
             # CRITICAL: Only save and report COMPLETED depth results
@@ -321,7 +375,8 @@ def _search_moves(engine, worker_id: int, fen: str, moves: List[chess.Move], max
                 depth_reached = depth
 
                 # Report completed depth result immediately
-                if result_queue is not None:
+                # FIX: Only report if still current generation
+                if result_queue is not None and not is_stale():
                     result = (best_move, best_score, best_pv, engine.kpi['nodes'], depth_reached)
                     result_queue.put((worker_id, result, generation))
 
@@ -341,6 +396,9 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
 
     If MAX_MP_CORES <= 1 or pool not initialized, falls back to single-threaded search.
 
+    FIX: Now increments shared generation FIRST to signal workers to abort,
+    eliminating the race condition where clear() happens before workers see set().
+
     Returns:
         Tuple of (best_move, score, pv, nodes, nps)
     """
@@ -357,9 +415,12 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
 
     start_time = time.perf_counter()
 
-    # Increment search generation to invalidate any stale results
-    _search_generation += 1
-    current_generation = _search_generation
+    # FIX: Increment generation FIRST - this immediately signals all workers
+    # that their current work is stale. Workers check this in their monitor
+    # thread (every 10ms) and will set stop_search = True.
+    # This eliminates the race where clear() happens before workers see set().
+    _search_generation.value += 1
+    current_generation = _search_generation.value
 
     # Clear shared tables if requested
     if clear_tt:
@@ -369,7 +430,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
             _shared_qs_tt.clear()
         # Keep dnn_cache (evaluations are always valid)
 
-    # Reset stop event
+    # Reset stop event - safe now because workers check generation first
     _stop_event.clear()
 
     # Reset shared alpha
@@ -400,7 +461,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         worker_idx = i % num_workers
         move_assignments[worker_idx].append(move)
 
-    _mp_diag_print(f"Search FEN: {fen[:60]}...")
+    _mp_diag_print(f"Search gen={current_generation} FEN: {fen[:60]}...")
     _mp_diag_print(f"Legal moves: {len(ordered)}, distributing to {num_workers} workers")
 
     # FIX: Drain any stale results from previous searches before sending new work
