@@ -75,6 +75,7 @@ STAND_PAT_MAX_NN_EVAL = _env_int('STAND_PAT_MAX_NN_EVAL',200)  # Absolute value 
 
 # Limit moves examined per QS ply to prevent explosion
 MAX_QS_DEPTH = _env_int('MAX_QS_DEPTH', 22)  #
+
 _max_qs_moves_default = [12, 6, 4, 2]
 _max_q_moves_env = os.environ.get('MAX_QS_MOVES')  # Max QS moves for various depths
 if _max_q_moves_env:

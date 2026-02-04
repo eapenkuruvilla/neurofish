@@ -194,10 +194,12 @@ def _worker_main(worker_id: int, work_queue: Queue, result_queue: Queue,
             # FIX: Reset stop flag before starting new search
             engine.TimeControl.stop_search = False
 
+            # Pass result_queue and generation for per-depth reporting
             result = _search_moves(engine, worker_id, fen, moves_to_search, depth, time_limit, initial_alpha,
-                                   stop_event, shared_alpha)
+                                   stop_event, shared_alpha, result_queue, generation)
 
-            # Include generation in result for stale detection
+            # Final result already reported per-depth, but send end marker
+            # This signals the worker has completely finished this search
             result_queue.put((worker_id, result, generation))
 
         except Exception as e:
@@ -210,11 +212,12 @@ def _worker_main(worker_id: int, work_queue: Queue, result_queue: Queue,
 
 
 def _search_moves(engine, worker_id: int, fen: str, moves: List[chess.Move], max_depth: int,
-                  time_limit: Optional[float], initial_alpha: int, stop_event: Event, shared_alpha: Value) -> Optional[
-    Tuple]:
+                  time_limit: Optional[float], initial_alpha: int, stop_event: Event, shared_alpha: Value,
+                  result_queue: Queue = None, generation: int = 0) -> Optional[Tuple]:
     """
     Search a list of root moves using iterative deepening.
-    Returns (best_move, best_score, best_pv, nodes) or None if stopped.
+    Reports results after each completed depth via result_queue.
+    Returns (best_move, best_score, best_pv, nodes, depth) or None if stopped.
     """
     from config import MAX_SCORE
     from cached_board import CachedBoard
@@ -257,6 +260,7 @@ def _search_moves(engine, worker_id: int, fen: str, moves: List[chess.Move], max
             depth_best_move = None
             depth_best_score = -MAX_SCORE
             depth_best_pv = []
+            depth_completed = False  # Track if this depth completed successfully
 
             alpha = -MAX_SCORE
             beta = MAX_SCORE
@@ -304,18 +308,29 @@ def _search_moves(engine, worker_id: int, fen: str, moves: List[chess.Move], max
                     if score > shared_alpha.value:
                         shared_alpha.value = score
 
-            # Save completed depth results
-            if depth_best_move is not None:
+            # Check if depth was fully completed (all moves searched without abort)
+            if depth_best_move is not None and not stop_event.is_set() and not engine.TimeControl.stop_search:
+                depth_completed = True
+
+            # CRITICAL: Only save and report COMPLETED depth results
+            # This matches engine.py: "Don't overwrite a completed depth's result with an incomplete one"
+            if depth_completed:
                 best_move = depth_best_move
                 best_score = depth_best_score
                 best_pv = depth_best_pv
                 depth_reached = depth
+
+                # Report completed depth result immediately
+                if result_queue is not None:
+                    result = (best_move, best_score, best_pv, engine.kpi['nodes'], depth_reached)
+                    result_queue.put((worker_id, result, generation))
 
     except TimeoutError:
         pass
 
     total_nodes = engine.kpi['nodes']
 
+    # Return final result (best completed depth)
     return (best_move, best_score, best_pv, total_nodes, depth_reached)
 
 
@@ -376,12 +391,17 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     ordered = [int_to_move(m) for m in ordered_int]
 
     # Distribute moves among workers
+    # With per-depth reporting, we can use all workers effectively
+    # Each worker reports results after each completed depth, so no work is lost
     num_workers = min(len(_worker_pool), len(ordered))
     move_assignments = [[] for _ in range(num_workers)]
 
     for i, move in enumerate(ordered):
         worker_idx = i % num_workers
         move_assignments[worker_idx].append(move)
+
+    _mp_diag_print(f"Search FEN: {fen[:60]}...")
+    _mp_diag_print(f"Legal moves: {len(ordered)}, distributing to {num_workers} workers")
 
     # FIX: Drain any stale results from previous searches before sending new work
     try:
@@ -391,75 +411,65 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         pass
 
     # Send work to workers (include generation to identify stale results)
+    # Workers report after EACH completed depth, so we get results progressively
+    # Give workers slightly less time so they stop before the main timeout
+    worker_time_limit = time_limit * 0.85 if time_limit else None
+
     initial_alpha = -MAX_SCORE
     for i in range(num_workers):
         if move_assignments[i]:
-            work = (fen, move_assignments[i], max_depth, time_limit, initial_alpha, current_generation)
+            work = (fen, move_assignments[i], max_depth, worker_time_limit, initial_alpha, current_generation)
             _work_queues[i].put(work)
 
-    # Collect results
-    results = []
-    workers_done = 0
+    # Collect results - workers now report after EACH completed depth
+    # We keep the best (highest depth) result from each worker
+    worker_best_results = {}  # worker_id -> (result, depth)
+    workers_finished = set()  # Track which workers have completely finished
     expected_workers = sum(1 for m in move_assignments if m)
 
-    # FIX: Check stop event in main collection loop
-    while workers_done < expected_workers:
+    # Collect results until time limit
+    while len(workers_finished) < expected_workers:
         # Check if we've been asked to stop externally
         if _stop_event.is_set():
             _mp_diag_print("Stop event detected during result collection")
             break
 
         try:
-            worker_id, result, result_generation = _result_queue.get(
-                timeout=0.1)  # FIX: Shorter timeout for responsiveness
+            worker_id, result, result_generation = _result_queue.get(timeout=0.1)
 
             # CRITICAL: Ignore stale results from previous searches
             if result_generation != current_generation:
                 _mp_diag_print(
                     f"Ignoring stale result from worker {worker_id} (gen {result_generation} != {current_generation})")
-                continue  # Don't increment workers_done - still waiting for current result
+                continue
 
-            workers_done += 1
             if result is not None:
-                results.append(result)
-                _mp_diag_print(f"Collected result from worker {worker_id}: {result[0].uci()} "
-                               f"score={result[1]} depth={result[4]}")
+                result_depth = result[4]  # depth_reached is at index 4
+
+                # Keep the result with highest depth from each worker
+                if worker_id not in worker_best_results or result_depth > worker_best_results[worker_id][1]:
+                    worker_best_results[worker_id] = (result, result_depth)
+                    _mp_diag_print(
+                        f"Worker {worker_id} reported: {result[0].uci()} score={result[1]} depth={result_depth}")
+
+                # Check if this is a final result (worker will send one more after loop ends)
+                # We track workers that have sent at least one result
+
         except Empty:
             # Check for timeout
             if time_limit and (time.perf_counter() - start_time) >= time_limit:
                 _mp_diag_print("Time limit reached, stopping workers")
-                _stop_event.set()
+                _stop_event.set()  # Signal all workers to stop
+                break  # Exit main loop immediately
 
-                # IMPORTANT: Wait for workers to finish and report (up to 1.0 seconds)
-                grace_period = 1.0
-                grace_start = time.perf_counter()
+    # CRITICAL: Ensure workers are stopped regardless of how we exited the loop
+    if not _stop_event.is_set():
+        _stop_event.set()  # Signal workers to stop if not already done
 
-                while workers_done < expected_workers:
-                    remaining = grace_period - (time.perf_counter() - grace_start)
-                    if remaining <= 0:
-                        _mp_diag_print(f"Grace period expired, {expected_workers - workers_done} workers didn't report")
-                        break
-                    try:
-                        worker_id, result, result_generation = _result_queue.get(timeout=min(0.1, remaining))
+    # Convert worker_best_results to results list
+    results = [r[0] for r in worker_best_results.values()]
 
-                        # CRITICAL: Ignore stale results from previous searches
-                        if result_generation != current_generation:
-                            _mp_diag_print(
-                                f"Ignoring stale result from worker {worker_id} (gen {result_generation} != {current_generation})")
-                            continue
-
-                        workers_done += 1
-                        if result is not None:
-                            results.append(result)
-                            _mp_diag_print(f"Collected result from worker {worker_id}: {result[0].uci()} "
-                                           f"score={result[1]} depth={result[4]}")
-                    except Empty:
-                        pass  # Keep waiting
-
-                break  # Exit main loop after grace period
-
-    if workers_done < expected_workers:
-        _mp_diag_print(f"Not all workers responded, reported={workers_done}, expected={expected_workers}")
+    _mp_diag_print(f"Collected results from {len(results)} workers out of {expected_workers}")
 
     # Pick best result (highest score)
     if not results:
