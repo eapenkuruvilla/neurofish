@@ -109,8 +109,6 @@ def uci_loop():
                 elif name.lower() == "threads":
                     cores = int(value)
                     mp_search.set_mp_cores(cores)
-                elif name.lower() == "sharedtt":
-                    mp_search.set_shared_tt(value.lower() == "true")
 
         elif command == "ucinewgame":
             # Print diagnostic summary from previous game (if any issues) when debug enabled
@@ -130,7 +128,6 @@ def uci_loop():
             ponder_start_time = None
             ponder_best_move = None
             ponder_best_score = None
-            mp_search.clear_shared_tables()  # Clear shared TT if MP enabled
 
         elif command.startswith("position"):
             # Stop any ongoing search (including ponder) before processing new position
