@@ -2,6 +2,7 @@ import heapq
 import re
 import time
 import traceback
+import threading
 from collections import namedtuple
 from pathlib import Path
 from typing import List, Tuple, Optional
@@ -165,11 +166,37 @@ def diag_print(msg: str):
 # Track positions seen in the current game (cleared on ucinewgame)
 game_position_history: dict[int, int] = {}  # zobrist_hash -> count
 
-# nn_evaluator: DNNEvaluator | NNUEEvaluator | None = None
+# Thread-local storage for nn_evaluator instances
+# Each thread gets its own evaluator to avoid state conflicts
+_thread_local = threading.local()
+
+# Main thread's nn_evaluator (also serves as template for creating thread-local copies)
 if NN_TYPE == "DNN":
     nn_evaluator = DNNEvaluator.create(CachedBoard(), NN_TYPE, MODEL_PATH)  # Loads model
 else:
     nn_evaluator = NNUEEvaluator.create(CachedBoard(), NN_TYPE, MODEL_PATH)
+
+
+def get_nn_evaluator() -> NNEvaluator:
+    """
+    Get the nn_evaluator for the current thread.
+
+    For the main thread, returns the global nn_evaluator.
+    For worker threads, creates and caches a thread-local instance.
+    """
+    # Check if we're in main thread - use global evaluator
+    if threading.current_thread() is threading.main_thread():
+        return nn_evaluator
+
+    # For worker threads, use thread-local evaluator
+    if not hasattr(_thread_local, 'nn_evaluator'):
+        # Create a new evaluator instance for this thread using the factory method
+        thread_name = threading.current_thread().name
+        diag_print(f"Creating thread-local nn_evaluator for {thread_name}")
+        _thread_local.nn_evaluator = NNEvaluator.create(CachedBoard(), NN_TYPE, MODEL_PATH)
+
+    return _thread_local.nn_evaluator
+
 
 PIECE_VALUES = {
     chess.PAWN: 100,
@@ -299,14 +326,17 @@ def evaluate_nn(board: CachedBoard, skip_game_over: bool = False) -> int:
         kpi['dec_hits'] += 1
         return dnn_eval_cache[key]
 
+    # Get thread-local evaluator
+    evaluator = get_nn_evaluator()
+
     # assert (board.is_quiet_position())
     kpi['nn_evals'] += 1
-    score = nn_evaluator.evaluate_centipawns(board)
+    score = evaluator.evaluate_centipawns(board)
     dnn_eval_cache[key] = score
 
     # Occasionally do a full evaluation to rule out any drift errors.
     if kpi['nn_evals'] % FULL_NN_EVAL_FREQ == 0:
-        full_score = nn_evaluator.evaluate_full_centipawns(board)
+        full_score = evaluator.evaluate_full_centipawns(board)
         if abs(full_score - score) > 10:
             _diag_warn("eval_drift", f"Incr={score} vs Full={full_score}, diff={abs(full_score - score)}")
     return score
@@ -747,7 +777,7 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
         move = int_to_move(move_int)
         should_update_nn = q_depth <= QS_DEPTH_MAX_NN_EVAL
         if should_update_nn:
-            push_move(board, move, nn_evaluator)
+            push_move(board, move, get_nn_evaluator())
         else:
             board.push(move)  # Only push board, not evaluator
 
@@ -759,7 +789,7 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
         board.pop()
 
         if should_update_nn:
-            nn_evaluator.pop()
+            get_nn_evaluator().pop()
 
         moves_searched += 1
 
@@ -908,11 +938,11 @@ def negamax(board: CachedBoard, depth: int, alpha: int, beta: int, allow_singula
             # and not on_expected_pv  # Don't null-move on PV
             and board.has_non_pawn_material()
             and board.occupied.bit_count() > 6):
-        push_move(board, chess.Move.null(), nn_evaluator)
+        push_move(board, chess.Move.null(), get_nn_evaluator())
         score, _ = negamax(board, depth - 1 - NULL_MOVE_REDUCTION, -beta, -beta + 1, allow_singular=False)
         score = -score
         board.pop()
-        nn_evaluator.pop()
+        get_nn_evaluator().pop()
         if score >= beta:
             return beta, []
 
@@ -942,11 +972,11 @@ def negamax(board: CachedBoard, depth: int, alpha: int, beta: int, allow_singula
                 break
 
             move = int_to_move(move_int)
-            push_move(board, move, nn_evaluator)
+            push_move(board, move, get_nn_evaluator())
             score, _ = negamax(board, reduced_depth, -reduced_beta - 1, -reduced_beta, allow_singular=False)
             score = -score
             board.pop()
-            nn_evaluator.pop()
+            get_nn_evaluator().pop()
             move_count += 1
 
             highest_score = max(highest_score, score)
@@ -1022,7 +1052,7 @@ def negamax(board: CachedBoard, depth: int, alpha: int, beta: int, allow_singula
 
         # Convert to chess.Move for push (needed by evaluator)
         move = int_to_move(move_int)
-        push_move(board, move, nn_evaluator)
+        push_move(board, move, get_nn_evaluator())
         child_in_check = board.is_check()
 
         # -------- Extensions --------
@@ -1075,7 +1105,7 @@ def negamax(board: CachedBoard, depth: int, alpha: int, beta: int, allow_singula
                 score = -score
 
         board.pop()
-        nn_evaluator.pop()
+        get_nn_evaluator().pop()
 
         if score > max_eval:
             max_eval = score
@@ -1152,12 +1182,12 @@ def extract_pv_from_tt_int(board: CachedBoard, max_depth: int) -> List[int]:
 
         pv.append(move_int)
         move = int_to_move(move_int)
-        push_move(board, move, nn_evaluator)
+        push_move(board, move, get_nn_evaluator())
 
     # Restore board state
     for _ in range(len(pv)):
         board.pop()
-        nn_evaluator.pop()
+        get_nn_evaluator().pop()
 
     return pv
 
@@ -1327,7 +1357,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
         return chess.Move.null(), 0, [], 0, 0
 
     nn_reset_start = time.perf_counter()
-    nn_evaluator.reset(board)
+    get_nn_evaluator().reset(board)
     nn_reset_time = time.perf_counter() - nn_reset_start
     if nn_reset_time > 0.1:
         diag_print(f"DEBUG: NN reset took {nn_reset_time:.3f}s")
@@ -1347,10 +1377,10 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
             best_move = legal_moves[0]
             best_score = -MAX_SCORE
             for move in legal_moves[:10]:  # Only look at first 10 moves
-                push_move(board, move, nn_evaluator)
+                push_move(board, move, get_nn_evaluator())
                 score = -evaluate_nn(board) if IS_NN_ENABLED else -evaluate_classical(board)
                 board.pop()
-                nn_evaluator.pop()
+                get_nn_evaluator().pop()
                 if score > best_score:
                     best_score = score
                     best_move = move
@@ -1481,7 +1511,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                     break
 
                 move = int_to_move(move_int)
-                push_move(board, move, nn_evaluator)
+                push_move(board, move, get_nn_evaluator())
 
                 if is_draw_by_repetition(board):
                     score = get_draw_score(board)
@@ -1499,7 +1529,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                             score = -score
 
                 board.pop()
-                nn_evaluator.pop()
+                get_nn_evaluator().pop()
 
                 # Check if search was aborted during negamax
                 # FIX: Only honor soft_stop after reaching MIN_ACCEPTABLE_DEPTH
@@ -1580,11 +1610,11 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                         break
 
                     move = int_to_move(move_int)
-                    push_move(board, move, nn_evaluator)
+                    push_move(board, move, get_nn_evaluator())
                     score, child_pv = negamax(board, depth - 1, -beta, -alpha, allow_singular=True)
                     score = -score
                     board.pop()
-                    nn_evaluator.pop()
+                    get_nn_evaluator().pop()
 
                     # Check if search was aborted during negamax
                     # FIX: Only honor soft_stop after reaching MIN_ACCEPTABLE_DEPTH
@@ -1694,7 +1724,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
 
         # Reset to clean state for fallback evaluation
         board = CachedBoard(fen)
-        nn_evaluator.reset(board)
+        get_nn_evaluator().reset(board)
         legal = board.get_legal_moves_list()
 
         if legal:
@@ -1713,14 +1743,14 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                     fallback_aborted = True
                     break
 
-                nn_evaluator.push_with_board(board, move)
+                get_nn_evaluator().push_with_board(board, move)
 
                 # Check for immediate game-ending conditions
                 if board.is_checkmate():
                     # We just delivered checkmate!
                     score = MAX_SCORE - board.ply()
                     board.pop()
-                    nn_evaluator.pop()
+                    get_nn_evaluator().pop()
                     best_move_int = move_to_int(move)
                     best_score = score
                     best_pv = [best_move_int]
@@ -1754,7 +1784,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                             continue
 
                         # ------- Use push_move helper which handles both board and nn_evaluator --------
-                        push_move(board, opp_move, nn_evaluator)
+                        push_move(board, opp_move, get_nn_evaluator())
 
                         # Check for mate threats
                         if board.is_checkmate():
@@ -1764,7 +1794,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                             opp_score = -evaluate_nn(board)  # Negate because it's opponent's view
 
                         board.pop()
-                        nn_evaluator.pop()
+                        get_nn_evaluator().pop()
                         opp_best = min(opp_best, opp_score)
                         opp_moves_checked += 1
 
@@ -1778,7 +1808,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                         score = -opp_best  # Our score is negative of opponent's best
 
                 board.pop()
-                nn_evaluator.pop()
+                get_nn_evaluator().pop()
 
                 if score > best_score:
                     best_score = score

@@ -7,7 +7,7 @@ import chess
 
 import mp_search
 from config import print_overridden_config
-from engine import find_best_move, TimeControl, MAX_MP_CORES, IS_SHARED_TT_MP
+from engine import find_best_move, TimeControl, MAX_THREADS
 
 # https://www.chessprogramming.org/Test-Positions
 win_at_chess_positions = \
@@ -441,8 +441,7 @@ def run_engine_tests(test_suite, is_mp=False):
     print(f"time_limit={test_suite[3]}")
 
     if is_mp:
-        mp_search.set_mp_cores(MAX_MP_CORES)
-        mp_search.set_shared_tt(IS_SHARED_TT_MP)
+        mp_search.set_mp_cores(MAX_THREADS)
 
     for line in re.split(test_suite[1], test_suite[0])[:test_suite[2]]:
         tests_total += 1
