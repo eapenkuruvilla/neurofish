@@ -7,9 +7,11 @@ Comprehensive test suite for validating the chess engine, neural network evaluat
 | Test File | Purpose | Key Tests |
 |-----------|---------|-----------|
 | `engine_test.py` | Chess engine move quality | WAC, Eigenmann test suites |
+| `engine_test_batch.py` | Parameter tuning via engine tests | Batch testing multiple parameter values |
 | `nn_tests.py` | Neural network correctness | Accumulator, symmetry, accuracy |
 | `data_test.py` | Training data integrity | Feature extraction, Stockfish comparison |
 | `stockfish.sh` | ELO measurement | Matches against Stockfish |
+| `stockfish_batch.py` | Parameter tuning via ELO | Batch testing against Stockfish |
 | `oldfish.sh` | Regression testing | Matches against previous versions |
 
 ## Prerequisites
@@ -44,44 +46,54 @@ python -m utils.sf_static_eval
 
 ```bash
 # Single-threaded
-python test/engine_test.py
+python -m test.engine_test
 
 # Multi-processing
-python test/engine_test.py --mp
+python -m test.engine_test --mp
+```
+
+### Run Parameter Tuning
+
+```bash
+# Tune parameter using engine tests (fast feedback)
+python -m test.engine_test_batch MAX_QS_DEPTH 20 21 22 23 24
+
+# Tune parameter using Stockfish matches (accurate ELO measurement)
+python -m test.stockfish_batch FUTILITY_MARGIN 100 150 200 --games 30 --elo 2300
 ```
 
 ### Run Neural Network Tests
 
 ```bash
 # Interactive FEN evaluation
-python test/nn_tests.py --nn-type NNUE --test 0
+python -m test.nn_tests --nn-type NNUE --test 0
 
 # Run all tests
-python test/nn_tests.py --nn-type NNUE --test 13
+python -m test.nn_tests --nn-type NNUE --test 13
 
 # Accumulator correctness
-python test/nn_tests.py --nn-type DNN --test 2
+python -m test.nn_tests --nn-type DNN --test 2
 ```
 
 ### Run Data Integrity Tests
 
 ```bash
 # Auto-detect and verify shards
-python test/data_test.py
+python -m test.data_test
 
 # Verify specific shard
-python test/data_test.py --dnn-shard data/dnn/train_0001.bin.zst
-python test/data_test.py --nnue-shard data/nnue/train_0001.bin.zst
+python -m test.data_test --dnn-shard data/dnn/train_0001.bin.zst
+python -m test.data_test --nnue-shard data/nnue/train_0001.bin.zst
 
 # Analyze shard statistics
-python test/data_test.py --analyze data/nnue/train_0001.bin.zst --nn-type NNUE
+python -m test.data_test --analyze data/nnue/train_0001.bin.zst --nn-type NNUE
 ```
 
 ### Measure ELO Rating
 
 ```bash
 # Play against Stockfish at specific ELO
-./test/stockfish.sh NeuroFish-v1 1500 10
+./test/stockfish.sh 2000 30
 
 # Play against previous engine version
 ./test/oldfish.sh neuro512 old1024 40/120+1 6
@@ -102,10 +114,10 @@ Tests the engine's tactical and positional move quality using standard test suit
 
 ```bash
 # Run WAC suite (default)
-python test/engine_test.py
+python -m test.engine_test
 
 # Enable multiprocessing
-python test/engine_test.py --mp
+python -m test.engine_test --mp
 ```
 
 ### Output
@@ -117,6 +129,122 @@ total=2, passed=2, success-rate=100.0%
 ...
 total=300, passed=267, success-rate=89.0%
 time-avg=4.12, time-max=5.03
+```
+
+## Parameter Tuning (`engine_test_batch.py`)
+
+Tunes engine parameters by running the WAC test suite with different parameter values. Provides quick feedback on parameter impact via success rate comparison.
+
+### Usage
+
+```bash
+python -m test.engine_test_batch PARAM_NAME value1 value2 value3 ...
+
+# Examples
+python -m test.engine_test_batch MAX_QS_DEPTH 20 21 22 23 24
+python -m test.engine_test_batch QS_SOFT_STOP_DIVISOR 7.0 8.0 9.0 10.0
+python -m test.engine_test_batch MAX_QS_MOVES "[12,6,4,2]" "[10,5,3,2]" "[15,8,5,3]"
+
+# With multiprocessing
+python -m test.engine_test_batch FUTILITY_MAX_DEPTH 2 3 4 --mp
+```
+
+### Command Line Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `PARAM_NAME` | Environment variable name to tune | Required |
+| `values` | Space-separated values to test | Required |
+| `--mp` | Enable multi-processing mode | False |
+
+### Output
+
+The script shows real-time progress with failures highlighted:
+
+```
+Testing MAX_QS_DEPTH=21
+----------------------------------------------------------------------
+✓ Using fast C++ chess backend (chess_cpp)
+✓ Using Cython-accelerated NN operations
+Loading NNUE model...
+time_limit=5
+#2 FAIL: 8/7p/5k2/5p2/p1p2P2/Pr1pPK2/1P1R3P/8 b
+#23 FAIL: r3nrk1/2p2p1p/p1p1b1p1/2NpPq2/3R4/P1N1Q3/1PP2PPP/4...
+Progress: 300 tests, 231 passed (77.0%)
+time-avg=0.64, time-max=3.08
+```
+
+Final summary table sorted by success rate:
+
+```
+==========================================================================================
+TUNING SUMMARY: MAX_QS_DEPTH
+==========================================================================================
+
+Value                            Success%     Passed    Total    TimeAvg    TimeMax
+------------------------------------------------------------------------------------------
+22                                  77.33        232      300       0.63       2.94
+23                                  77.00        231      300       0.64       3.01
+21                                  76.33        229      300       0.64       3.08
+------------------------------------------------------------------------------------------
+
+*** BEST VALUE: MAX_QS_DEPTH=22
+    Success Rate: 77.33% (232/300)
+    Time: avg=0.63s, max=2.94s
+
+    Improvement over worst (21): +1.00%
+```
+
+### Note
+
+Parameters are passed as environment variables. Ensure your `config.py` reads parameters from `os.environ` for the tuning to take effect.
+
+## Parameter Tuning via ELO (`stockfish_batch.py`)
+
+Tunes engine parameters by playing matches against Stockfish at a specified ELO level. Provides accurate ELO measurement but takes longer than engine tests.
+
+### Usage
+
+```bash
+python -m test.stockfish_batch PARAM_NAME value1 value2 value3 ... [options]
+
+# Examples
+python -m test.stockfish_batch QS_SOFT_STOP_DIVISOR 7.0 8.0 9.0 10.0
+python -m test.stockfish_batch MAX_QS_MOVES "[12,6,4,2]" "[10,5,3,2]"
+python -m test.stockfish_batch FUTILITY_MAX_DEPTH 2 3 4 --games 50 --elo 2400
+```
+
+### Command Line Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `PARAM_NAME` | Environment variable name to tune | Required |
+| `values` | Space-separated values to test | Required |
+| `--games`, `-g` | Number of games per value | 30 |
+| `--elo`, `-e` | Stockfish ELO level | 2300 |
+| `--script`, `-s` | Path to stockfish.sh | Auto-detect |
+
+### Output
+
+Final summary table sorted by ELO difference:
+
+```
+==========================================================================================
+TUNING SUMMARY: QS_SOFT_STOP_DIVISOR
+==========================================================================================
+
+Value                            Est.Elo    EloDiff     ±Error        W-L-D     LOS%
+------------------------------------------------------------------------------------------
+8.0                                 2395       +94.9      125.5       17-9-4     94.2
+9.0                                 2350       +50.0      110.2       14-10-6    82.1
+7.0                                 2320       +20.0       98.5       12-10-8    68.5
+------------------------------------------------------------------------------------------
+
+*** BEST VALUE: QS_SOFT_STOP_DIVISOR=8.0
+    Estimated Elo: 2395 (SF 2300 + +94.9 ±125.5)
+    W-L-D: 17-9-4, LOS: 94.2%
+
+    Improvement over worst (7.0): +74.9 Elo
 ```
 
 ## Neural Network Tests (`nn_tests.py`)
@@ -146,22 +274,22 @@ Comprehensive test suite for NNUE and DNN model validation.
 
 ```bash
 # Interactive evaluation
-python test/nn_tests.py --nn-type NNUE --test 0
+python -m test.nn_tests --nn-type NNUE --test 0
 
 # Performance benchmark
-python test/nn_tests.py --nn-type DNN --test 1
+python -m test.nn_tests --nn-type DNN --test 1
 
 # Accuracy test with 10000 positions
-python test/nn_tests.py --nn-type NNUE --test 3 --positions 10000
+python -m test.nn_tests --nn-type NNUE --test 3 --positions 10000
 
 # Deep search simulation
-python test/nn_tests.py --nn-type NNUE --test 9 --depth 4 --iterations 10
+python -m test.nn_tests --nn-type NNUE --test 9 --depth 4 --iterations 10
 
 # Random games test
-python test/nn_tests.py --nn-type DNN --test 10 --num-games 10 --max-moves 100
+python -m test.nn_tests --nn-type DNN --test 10 --num-games 10 --max-moves 100
 
 # Compare against Stockfish
-python test/nn_tests.py --nn-type NNUE --test 4 --positions 100 --stockfish /usr/bin/stockfish
+python -m test.nn_tests --nn-type NNUE --test 4 --positions 100 --stockfish /usr/bin/stockfish
 ```
 
 ### Command Line Options
@@ -194,19 +322,19 @@ Verifies correctness of training data shards by comparing stored features agains
 
 ```bash
 # Auto-detect shards in data/ directory
-python test/data_test.py
+python -m test.data_test
 
 # Verify specific DNN shard
-python test/data_test.py --dnn-shard data/dnn/train_0001.bin.zst
+python -m test.data_test --dnn-shard data/dnn/train_0001.bin.zst
 
 # Verify specific NNUE shard  
-python test/data_test.py --nnue-shard data/nnue/train_0001.bin.zst
+python -m test.data_test --nnue-shard data/nnue/train_0001.bin.zst
 
 # Analyze shard statistics
-python test/data_test.py --analyze data/nnue/train_0001.bin.zst --nn-type NNUE
+python -m test.data_test --analyze data/nnue/train_0001.bin.zst --nn-type NNUE
 
 # Verify more diagnostic records
-python test/data_test.py --max-records 100
+python -m test.data_test --max-records 100
 ```
 
 ### Command Line Options
@@ -227,17 +355,18 @@ python test/data_test.py --max-records 100
 Plays matches against Stockfish at a specified ELO level to measure engine strength.
 
 ```bash
-./test/stockfish.sh <engine-tag> <stockfish-elo> <num-games>
+./test/stockfish.sh <stockfish-elo> <num-games> [--debug]
 
 # Examples
-./test/stockfish.sh DNN512 1500 10    # 10 games vs Stockfish 1500
-./test/stockfish.sh NNUE-v2 2000 50   # 50 games vs Stockfish 2000
+./test/stockfish.sh 1500 10           # 10 games vs Stockfish 1500
+./test/stockfish.sh 2000 50           # 50 games vs Stockfish 2000
+./test/stockfish.sh 2300 30 --debug   # 30 games with debug output
 ```
 
 **Parameters:**
-- `engine-tag`: Name for your engine in PGN output
 - `stockfish-elo`: Target ELO for Stockfish (UCI_LimitStrength)
 - `num-games`: Number of games to play
+- `--debug`: Optional flag to enable debug output
 
 **Time Control:** 40 moves in 120 seconds + 1 second increment
 
@@ -262,7 +391,7 @@ Plays matches against a previous version of the engine for regression testing.
 **Requirements:**
 - Current engine at `../uci.sh`
 - Previous engine at `../../oldfish/uci.sh`
-- cutechess-cli at `~/Temp/cutechess/build/cutechess-cli`
+- cutechess-cli at `../../cutechess/build/cutechess-cli`
 
 ## Test Output Locations
 
@@ -278,19 +407,25 @@ Plays matches against a previous version of the engine for regression testing.
 
 ```bash
 # 1. Verify training data
-python test/data_test.py
+python -m test.data_test
 
 # 2. Train model
 python nn_train.py --nn-type NNUE --epochs 10
 
 # 3. Run NN tests
-python test/nn_tests.py --nn-type NNUE --test 13
+python -m test.nn_tests --nn-type NNUE --test 13
 
 # 4. Run engine tests
-python test/engine_test.py
+python -m test.engine_test
 
-# 5. Measure ELO
-./test/stockfish.sh NNUE-trained 1800 20
+# 5. Tune parameters (quick feedback)
+python -m test.engine_test_batch MAX_QS_DEPTH 20 21 22 23 24
+
+# 6. Tune parameters (accurate ELO)
+python -m test.stockfish_batch MAX_QS_DEPTH 21 22 23 --games 30 --elo 2300
+
+# 7. Measure final ELO
+./test/stockfish.sh 2300 30
 ```
 
 ## Troubleshooting
@@ -302,7 +437,7 @@ python test/engine_test.py
 ls -la model/nnue.pt model/dnn.pt
 
 # Specify path explicitly
-python test/nn_tests.py --nn-type NNUE --test 2 --model-path /path/to/model.pt
+python -m test.nn_tests --nn-type NNUE --test 2 --model-path /path/to/model.pt
 ```
 
 ### "No diagnostic records found"
@@ -330,19 +465,31 @@ uci
 quit
 
 # Or specify full path
-python test/nn_tests.py --nn-type NNUE --test 4 --stockfish /usr/games/stockfish
+python -m test.nn_tests --nn-type NNUE --test 4 --stockfish /usr/games/stockfish
+```
+
+### Parameter tuning not taking effect
+
+Ensure your `config.py` reads parameters from environment variables:
+
+```python
+import os
+
+MAX_QS_DEPTH = int(os.environ.get('MAX_QS_DEPTH', 22))
 ```
 
 ## Files Overview
 
 ```
 test/
-├── engine_test.py      # Engine move quality tests (WAC, Eigenmann)
-├── nn_tests.py         # Neural network validation suite
-├── data_test.py        # Training data integrity verification
-├── stockfish.sh        # ELO measurement vs Stockfish
-├── oldfish.sh          # Regression testing vs previous versions
-└── README.md           # This file
+├── engine_test.py        # Engine move quality tests (WAC, Eigenmann)
+├── engine_test_batch.py  # Parameter tuning via engine tests
+├── nn_tests.py           # Neural network validation suite
+├── data_test.py          # Training data integrity verification
+├── stockfish.sh          # ELO measurement vs Stockfish
+├── stockfish_batch.py    # Parameter tuning via Stockfish matches
+├── oldfish.sh            # Regression testing vs previous versions
+└── README.md             # This file
 ```
 
 ## Performance Benchmarks
@@ -352,9 +499,11 @@ Expected test durations on typical hardware:
 | Test | Duration |
 |------|----------|
 | WAC Suite (300 positions) | ~25 minutes |
+| Engine Test Batch (5 values) | ~2 hours |
 | NN All Tests | ~5 minutes |
 | Data Verification | ~1 minute |
 | Stockfish Match (10 games) | ~30 minutes |
+| Stockfish Batch (5 values × 30 games) | ~12 hours |
 
 ## License
 

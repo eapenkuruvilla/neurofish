@@ -73,9 +73,9 @@ QS_DELTA_MAX_NN_EVAL = _env_int('QS_DELTA_MAX_NN_EVAL', 100)  # Score difference
 STAND_PAT_MAX_NN_EVAL = _env_int('STAND_PAT_MAX_NN_EVAL',200)  # Absolute value of stand-pat, below it will trigger a NN evaluation.
 
 # Limit moves examined per QS ply to prevent explosion
-MAX_QS_DEPTH = _env_int('MAX_QS_DEPTH', 22)  #
+MAX_QS_DEPTH = _env_int('MAX_QS_DEPTH', 24)  #
 
-_max_qs_moves_default = [12, 6, 4, 2]
+_max_qs_moves_default = [16, 8, 4, 2]
 _max_q_moves_env = os.environ.get('MAX_QS_MOVES')  # Max QS moves for various depths
 if _max_q_moves_env:
     MAX_QS_MOVES = eval(_max_q_moves_env)
@@ -95,9 +95,9 @@ else:
 QS_SOFT_STOP_DIVISOR = _env_float('QS_SOFT_STOP_DIVISOR', 9.0)
 QS_TIME_CRITICAL_FACTOR = _env_float('QS_TIME_CRITICAL_FACTOR', 0.86)
 MAX_QS_MOVES_TIME_CRITICAL = _env_int('MAX_QS_MOVES_TIME_CRITICAL', 5)
-DELTA_PRUNING_QS_MIN_DEPTH = _env_int('DELTA_PRUNING_QS_MIN_DEPTH', 5)
-DELTA_PRUNING_QS_MARGIN = _env_int('DELTA_PRUNING_QS_MARGIN', 75)
-CHECK_QS_MAX_DEPTH = _env_int('CHECK_QS_MAX_DEPTH', 5)
+DELTA_PRUNING_QS_MIN_DEPTH = _env_int('DELTA_PRUNING_QS_MIN_DEPTH', 6)
+DELTA_PRUNING_QS_MARGIN = _env_int('DELTA_PRUNING_QS_MARGIN', 125)
+CHECK_QS_MAX_DEPTH = _env_int('CHECK_QS_MAX_DEPTH', 3)
 QS_TIME_CHECK_INTERVAL = _env_int('QS_TIME_CHECK_INTERVAL', 40)
 QS_TIME_BUDGET_FRACTION = _env_float('QS_TIME_BUDGET_FRACTION', 0.35)
 QS_TT_SUPPORTED = _env_bool('QS_TT_SUPPORTED', False)
@@ -117,9 +117,9 @@ TIME_SAFETY_MARGIN_RATIO = _env_float('TIME_SAFETY_MARGIN_RATIO', 0.45)  # Only 
 
 ASPIRATION_WINDOW = _env_int('ASPIRATION_WINDOW', 90)  #
 MAX_AW_RETRIES = _env_int('MAX_AW_RETRIES', 1)  # Base retries (tactical positions get +1)
-MAX_AW_RETRIES_TACTICAL = _env_int('MAX_AW_RETRIES_TACTICAL', 3)  # More retries for tactical positions
+MAX_AW_RETRIES_TACTICAL = _env_int('MAX_AW_RETRIES_TACTICAL', 4)  # More retries for tactical positions
 
-LMR_MOVE_THRESHOLD = _env_int('LMR_MOVE_THRESHOLD', 2)
+LMR_MOVE_THRESHOLD = _env_int('LMR_MOVE_THRESHOLD', 3)
 LMR_MIN_DEPTH = _env_int('LMR_MIN_DEPTH', 4)  # minimum depth to apply LMR
 
 NULL_MOVE_REDUCTION = _env_int('NULL_MOVE_REDUCTION', 2)  # R value (usually 2 or 3)
