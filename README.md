@@ -220,61 +220,31 @@ conda activate neurofish
 | Against Stockfish NNUE positional evaluation (depth 0) | MSE - tanh(CP/410)                | 0.021                  | 0.0178                  |
 | Against Classical piece-square evaluation (ELO 1883)   | MAE - ELO                         | +394                   | +607                    |
 
-**Analysis:** NNUE outperforms DNN in playing strength primarily due to its 4x faster evaluation time, allowing deeper search within the same time constraints. The NNUE architecture's incremental update capability means that after each move, only affected features need recalculation, whereas DNN requires full forward propagation.
-
-Interestingly, both NN architectures slightly outperform Stockfish's NNUE in raw positional accuracy (lower MAE against SF NNUE eval). This may be attributed to quantization errors in Stockfish's heavily optimized INT8 implementation, whereas NeuroFish uses FP32 precision.
-
-### Multiprocessing Performance
-
-| Cores | ELO  |
-|-------|------|
-| 1     | 2312 |
-| 2     | 9999 |
-| 4     | 9999 |
-| 6     | 9999 |
-
-Multiprocessing provides diminishing returns beyond 2-6 cores due to Python's Global Interpreter Lock (GIL) and inter-process communication overhead. 
-
-### Quantization Impact
-
-| Type | ELO  |
-|------|------|
-| FP32 (None) | 2312 |
-| INT16 | 2265 |
-| INT8 | 2358 |
-
-**Analysis:** Quantization did not improve ELO (and actually decreased it slightly) because Python's NumPy operations don't benefit from SIMD-accelerated integer arithmetic the way C++ implementations do. In C++ engines like Stockfish, INT8 quantization enables AVX-512/VNNI instructions that process multiple values simultaneously. In Python, the overhead of type conversions and lack of vectorized integer operations negates any potential speedup, while the reduced precision causes evaluation accuracy loss.
+**Analysis:** NNUE outperforms DNN in playing strength primarily due to its 4x faster evaluation time, allowing deeper search within the same time constraints. The NNUE architecture's incremental update capability means that after each move, only affected features need recalculation, whereas DNN requires full forward propagation.  Interestingly, both NN architectures slightly outperform Stockfish's NNUE in raw positional accuracy (lower MAE against SF NNUE eval). This may be attributed to quantization errors in Stockfish's heavily optimized INT8 implementation.
 
 ### ELO Gains by Various Features
 
-| Type                              | ELO Change |
-|-----------------------------------|------------|
-| C++ Board                         | +95        |
-| Cython acceleration               | +107       |
-| BLAS without multiprocessing      | +35        |
-| BLAS with 6 cores multiprocessing | TBD        |
+| Type                             | ELO Change |
+|----------------------------------|------------|
+| C++ Board                        | +95        |
+| Cython acceleration              | +107       |
+| QUNATIZATION (INT8)              | +46        |
+| QUNATIZATION (INT16)             | -47        |
+| BLAS multi-core without Lazy-SMP | +35        |
+| BLAS multi-core with Lazy-SMP    | TBD        |
 
+**Analysis:** TBD.
 
-**Analysis:**  C++ Board (Disservin/chess-library) improved the performance by about 100 ELOs.
+### Lazy-SMP Performance
 
+| Threads | ELO  |
+|---------|------|
+| 1       | 2447 |
+| 2       | 2461 |
+| 4       | 9999 |
+| 6       | 9999 |
 
-### C++ Board instead of Python-Chess Board
-
-| Type        | ELO  |
-|-------------|------|
-| chess.Board | 2217 |
-| C++ Board   | 2312 |
-
-**Analysis:**  C++ Board (Disservin/chess-library) improved the performance by about 100 ELOs.
-
-### Cython for Matrix Multiplication
-
-| Type   | ELO  |
-|--------|------|
-| Python | 2376 |
-| Cython | 9999 |
-
-**Analysis:**  Cython improved the performance by about 100 ELOs.
+**Analysis:** TBD.
 
 ## Future Work
 
