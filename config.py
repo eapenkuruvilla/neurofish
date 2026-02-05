@@ -120,12 +120,12 @@ MAX_AW_RETRIES = _env_int('MAX_AW_RETRIES', 1)  # Base retries (tactical positio
 MAX_AW_RETRIES_TACTICAL = _env_int('MAX_AW_RETRIES_TACTICAL', 4)  # More retries for tactical positions
 
 LMR_MOVE_THRESHOLD = _env_int('LMR_MOVE_THRESHOLD', 3)
-LMR_MIN_DEPTH = _env_int('LMR_MIN_DEPTH', 4)  # minimum depth to apply LMR
+LMR_MIN_DEPTH = _env_int('LMR_MIN_DEPTH', 2)  # minimum depth to apply LMR
 
 NULL_MOVE_REDUCTION = _env_int('NULL_MOVE_REDUCTION', 2)  # R value (usually 2 or 3)
 NULL_MOVE_MIN_DEPTH = _env_int('NULL_MOVE_MIN_DEPTH', 3)
 
-SINGULAR_MARGIN = _env_int('SINGULAR_MARGIN', 130)  # Score difference in centipawns
+SINGULAR_MARGIN = _env_int('SINGULAR_MARGIN', 150)  # Score difference in centipawns
 SINGULAR_EXTENSION = _env_int('SINGULAR_EXTENSION', 1)  # Extra depth
 
 # SEE Pruning - prune losing captures at low depths
@@ -135,14 +135,14 @@ SEE_PRUNING_MAX_DEPTH = _env_int('SEE_PRUNING_MAX_DEPTH', 6)  # Only apply at sh
 # Futility Pruning - skip quiet moves when position is hopeless
 FUTILITY_PRUNING_ENABLED = _env_bool('FUTILITY_PRUNING_ENABLED', True)
 # Note: FUTILITY_MARGIN is a list - use JSON format in env var, e.g. "[0,150,300,450]"
-_futility_default = [0, 150, 300, 450]
+_futility_default = [0, 50, 100, 350]
 _futility_env = os.environ.get('FUTILITY_MARGIN')
 if _futility_env:
     FUTILITY_MARGIN = eval(_futility_env)
     _overridden_params.append(('FUTILITY_MARGIN', _futility_default, FUTILITY_MARGIN))
 else:
     FUTILITY_MARGIN = _futility_default
-FUTILITY_MAX_DEPTH = _env_int('FUTILITY_MAX_DEPTH', 3)  # Only apply at depth <= 3
+FUTILITY_MAX_DEPTH = _env_int('FUTILITY_MAX_DEPTH', 5)  # Only apply at depth <= 3
 
 # Razoring - drop into quiescence when far below alpha
 RAZORING_ENABLED = _env_bool('RAZORING_ENABLED', False)
