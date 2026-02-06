@@ -233,7 +233,7 @@ conda activate neurofish
 | Quantization (INT8)              | +46        |
 | Quantization (INT16)             | -47        |
 | BLAS multi-core without Lazy SMP | +35        |
-| BLAS multi-core with Lazy SMP    | TBD        |
+| BLAS multi-core with Lazy SMP    | -176       |
 
 **Analysis:** The two largest gains come from reducing Python interpreter overhead: Cython-optimized NN operations (+107) and C++ move generation (+95) together contribute over 200 ELO, underscoring that raw execution speed is the dominant bottleneck in a Python chess engine. Faster evaluation and move generation translate directly into deeper search within the same time budget. INT8 quantization (+46) further accelerates NN inference by leveraging narrower integer arithmetic, while INT16 quantization (-47) regresses because its wider data types reduce SIMD throughput without a compensating improvement in evaluation accuracy. BLAS multi-core (+35) provides a modest gain by parallelizing the matrix operations within NN inference—this benefit is orthogonal to search-level parallelism and stacks with single-threaded optimizations.
 

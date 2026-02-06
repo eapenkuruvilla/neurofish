@@ -56,7 +56,7 @@ debug_mode = _env_bool('DEBUG_MODE', False)  # Runtime toggle via UCI "debug on/
 
 # Multiprocessing configuration
 MAX_THREADS = _env_int('MAX_THREADS', 2)  # 1 or less disables multiprocessing, UCI option "Threads"
-IS_BLAS_ENABLED = _env_bool('IS_BLAS_ENABLED', False)
+IS_MULTI_CORE_BLAS = _env_bool('IS_MULTI_CORE_BLAS', False)
 IS_NN_ENABLED = _env_bool('IS_NN_ENABLED', True)
 NN_TYPE = _env_str('NN_TYPE', "NNUE")
 L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "INT8")  # Options: "NONE" (FP32), "INT8", "INT16"
@@ -80,6 +80,7 @@ if _max_q_moves_env:
 else:
     MAX_QS_MOVES = _max_qs_moves_default
 
+# MAX_QS_MOVES_DIVISOR divisors divide MAX_QS_DEPTH into 4 segments. For each segment the values in MAX_QS_MOVES apply.
 _max_qs_moves_divisor_default = [4, 2.0, 1.33]
 _max_q_moves_divisor_env = os.environ.get('MAX_QS_MOVES_DIVISOR')
 if _max_q_moves_divisor_env:

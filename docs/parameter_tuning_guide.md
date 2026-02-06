@@ -58,16 +58,16 @@ These control the tactical search - **use engine_test.py** as primary, validate 
 | `DELTA_PRUNING_QS_MARGIN` | 75 | **engine_test.py** | Delta pruning aggressiveness |
 
 **Note on MAX_QS_MOVES and MAX_QS_MOVES_DIVISOR interaction**: 
-- `MAX_QS_MOVES_DIVISOR = [D1, D2, D3]` divides `MAX_QS_DEPTH` into 4 zones:
-  - Zone 1: depth > MAX_QS_DEPTH/D1 → uses MAX_QS_MOVES[0] (12 moves)
-  - Zone 2: MAX_QS_DEPTH/D1 >= depth > MAX_QS_DEPTH/D2 → uses MAX_QS_MOVES[1] (6 moves)
-  - Zone 3: MAX_QS_DEPTH/D2 >= depth > MAX_QS_DEPTH/D3 → uses MAX_QS_MOVES[2] (4 moves)
-  - Zone 4: depth <= MAX_QS_DEPTH/D3 → uses MAX_QS_MOVES[3] (2 moves)
+- `MAX_QS_MOVES_DIVISOR = [D1, D2, D3]` divides `MAX_QS_DEPTH` into 4 segments:
+  - Segment 1: depth > MAX_QS_DEPTH/D1 → uses MAX_QS_MOVES[0] (12 moves)
+  - Segment 2: MAX_QS_DEPTH/D1 >= depth > MAX_QS_DEPTH/D2 → uses MAX_QS_MOVES[1] (6 moves)
+  - Segment 3: MAX_QS_DEPTH/D2 >= depth > MAX_QS_DEPTH/D3 → uses MAX_QS_MOVES[2] (4 moves)
+  - Segment 4: depth <= MAX_QS_DEPTH/D3 → uses MAX_QS_MOVES[3] (2 moves)
 - Example with defaults: MAX_QS_DEPTH=22, divisors=[4, 2.0, 1.33]
-  - Zone 1 (depth > 5.5): 12 moves
-  - Zone 2 (5.5 >= depth > 11): 6 moves
-  - Zone 3 (11 >= depth > 16.5): 4 moves
-  - Zone 4 (depth <= 16.5): 2 moves
+  - Segment 1 (depth > 5.5): 12 moves
+  - Segment 2 (5.5 >= depth > 11): 6 moves
+  - Segment 3 (11 >= depth > 16.5): 4 moves
+  - Segment 4 (depth <= 16.5): 2 moves
 
 **Note**: After finding optimal values with engine_test.py, always validate with a few stockfish.sh games to ensure no regression in playing strength.
 
@@ -189,7 +189,7 @@ These parameters ONLY matter in timed games and cannot be evaluated with engine_
 |-----------|---------|-------------|-----------|
 | `MAX_TABLE_SIZE` | 200,000 | **stockfish.sh** | Affects memory/speed tradeoff over many games |
 | `MAX_THREADS` | 2 | **stockfish.sh** | Multiprocessing (1 or less disables MP) |
-| `IS_BLAS_ENABLED` | False | **stockfish.sh** | BLAS acceleration |
+| `IS_MULTI_CORE_BLAS` | False | **stockfish.sh** | BLAS acceleration |
 | `IS_PONDERING_ENABLED` | True | **stockfish.sh** | Thinking on opponent's time |
 
 ---

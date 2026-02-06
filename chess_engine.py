@@ -21,7 +21,7 @@ HOME_DIR = "neurofish"
 DNN_MODEL_FILEPATH = CURR_DIR / f"../{HOME_DIR}" / 'model' / 'dnn.pt'
 NNUE_MODEL_FILEPATH = CURR_DIR / f"../{HOME_DIR}" / 'model' / 'nnue.pt'
 
-if not IS_BLAS_ENABLED:
+if not IS_MULTI_CORE_BLAS:
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
     os.environ["OMP_NUM_THREADS"] = "1"
