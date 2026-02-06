@@ -7,12 +7,12 @@ import chess
 import chess.polyglot
 
 from config import IS_PONDERING_ENABLED
-from engine import (find_best_move, MAX_NEGAMAX_DEPTH, TimeControl, dnn_eval_cache,
-                    clear_game_history, game_position_history, HOME_DIR, kpi,
-                    diag_summary, set_debug_mode,
-                    is_debug_enabled, diag_print)
+from chess_engine import (find_best_move, MAX_NEGAMAX_DEPTH, TimeControl, dnn_eval_cache,
+                          clear_game_history, game_position_history, HOME_DIR, kpi,
+                          diag_summary, set_debug_mode,
+                          is_debug_enabled, diag_print)
 from book_move import init_opening_book, get_book_move
-import mp_search
+import lazy_smp
 
 # Resign settings
 RESIGN_THRESHOLD = -500  # centipawns

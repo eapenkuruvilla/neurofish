@@ -5,9 +5,9 @@ from contextlib import redirect_stdout
 
 import chess
 
-import mp_search
+import lazy_smp
 from config import print_overridden_config
-from engine import find_best_move, TimeControl, MAX_THREADS
+from chess_engine import find_best_move, TimeControl, MAX_THREADS
 
 # https://www.chessprogramming.org/Test-Positions
 win_at_chess_positions = \

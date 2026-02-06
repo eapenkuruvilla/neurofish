@@ -55,12 +55,11 @@ IS_DIAGNOSTIC = _env_bool('IS_DIAGNOSTIC', False)  # Master switch for diagnosti
 debug_mode = _env_bool('DEBUG_MODE', False)  # Runtime toggle via UCI "debug on/off"
 
 # Multiprocessing configuration
-MAX_THREADS = _env_int('MAX_THREADS', 1)  # 1 or less disables multiprocessing, UCI option "Threads"
-IS_SHARED_TT_MP = _env_bool('IS_SHARED_TT_MP', False)  # Whether to share TT across workers in MP mode
+MAX_THREADS = _env_int('MAX_THREADS', 2)  # 1 or less disables multiprocessing, UCI option "Threads"
 IS_BLAS_ENABLED = _env_bool('IS_BLAS_ENABLED', False)
 IS_NN_ENABLED = _env_bool('IS_NN_ENABLED', True)
 NN_TYPE = _env_str('NN_TYPE', "NNUE")
-L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "NONE")  # Options: "NONE" (FP32), "INT8", "INT16"
+L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "INT8")  # Options: "NONE" (FP32), "INT8", "INT16"
 FULL_NN_EVAL_FREQ = _env_int('FULL_NN_EVAL_FREQ', 3000)  # Increase to 50_000 after initial testing
 
 # Note when NN related parameters are optimized, use real games as positional understanding will be reflected.
@@ -102,9 +101,9 @@ QS_TT_SUPPORTED = _env_bool('QS_TT_SUPPORTED', False)
 # Minimum depth requirements
 # Tuning of depth adjustment should be done playing against stockfish (not using engine_test.py)
 MIN_NEGAMAX_DEPTH = _env_int('MIN_NEGAMAX_DEPTH', 4)  # Minimum depth before soft_stop is honored
-MIN_PREFERRED_DEPTH = _env_int('MIN_PREFERRED_DEPTH', 5)  # NEW: Preferred minimum depth
-TACTICAL_MIN_DEPTH = _env_int('TACTICAL_MIN_DEPTH', 5)  # NEW: Minimum depth for tactical positions
-UNSTABLE_MIN_DEPTH = _env_int('UNSTABLE_MIN_DEPTH', 5)  # FIX V4: Minimum depth when score instability
+MIN_PREFERRED_DEPTH = _env_int('MIN_PREFERRED_DEPTH', 5)  # Preferred minimum depth
+TACTICAL_MIN_DEPTH = _env_int('TACTICAL_MIN_DEPTH', 5)  # Minimum depth for tactical positions
+UNSTABLE_MIN_DEPTH = _env_int('UNSTABLE_MIN_DEPTH', 5)  # Minimum depth when score instability
 
 # Time management
 # Tuning of time management should be done playing against stockfish (not using engine_test.py)
@@ -114,7 +113,7 @@ TIME_SAFETY_MARGIN_RATIO = _env_float('TIME_SAFETY_MARGIN_RATIO', 0.45)  # Only 
 
 ASPIRATION_WINDOW = _env_int('ASPIRATION_WINDOW', 75)  # FIX V4: Increased from 50
 MAX_AW_RETRIES = _env_int('MAX_AW_RETRIES', 1)  # Base retries (tactical positions get +1)
-MAX_AW_RETRIES_TACTICAL = _env_int('MAX_AW_RETRIES_TACTICAL', 3)  # FIX V4: More retries for tactical positions
+MAX_AW_RETRIES_TACTICAL = _env_int('MAX_AW_RETRIES_TACTICAL', 3)  # More retries for tactical positions
 
 LMR_MOVE_THRESHOLD = _env_int('LMR_MOVE_THRESHOLD', 2)
 LMR_MIN_DEPTH = _env_int('LMR_MIN_DEPTH', 4)  # minimum depth to apply LMR
@@ -132,7 +131,7 @@ SEE_PRUNING_MAX_DEPTH = _env_int('SEE_PRUNING_MAX_DEPTH', 6)  # Only apply at sh
 # Futility Pruning - skip quiet moves when position is hopeless
 FUTILITY_PRUNING_ENABLED = _env_bool('FUTILITY_PRUNING_ENABLED', True)
 # Note: FUTILITY_MARGIN is a list - use JSON format in env var, e.g. "[0,150,300,450]"
-_futility_default = [0, 150, 300, 450]
+_futility_default = [0, 50, 100, 350]
 _futility_env = os.environ.get('FUTILITY_MARGIN')
 if _futility_env:
     FUTILITY_MARGIN = eval(_futility_env)
@@ -151,7 +150,7 @@ if _razoring_env:
     _overridden_params.append(('RAZORING_MARGIN', _razoring_default, RAZORING_MARGIN))
 else:
     RAZORING_MARGIN = _razoring_default
-RAZORING_MAX_DEPTH = _env_int('RAZORING_MAX_DEPTH', 2)  # Only apply at depth <= 2
+RAZORING_MAX_DEPTH = _env_int('RAZORING_MAX_DEPTH', 2)
 
 MAX_NEGAMAX_DEPTH = _env_int('MAX_NEGAMAX_DEPTH', 20)
 MAX_SEARCH_TIME = _env_int('MAX_SEARCH_TIME', 30)

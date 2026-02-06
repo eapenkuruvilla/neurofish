@@ -14,7 +14,7 @@ class NNEvaluator(ABC):
     Abstract evaluator for neural network position evaluation.
     Handles both NNUE and DNN with unified interface.
 
-    IMPORTANT: This class does NOT manage board state. The caller (e.g., engine.py)
+    IMPORTANT: This class does NOT manage board state. The caller (e.g., chess_engine.py)
     is responsible for calling board.push() and board.pop(). This class only
     maintains the incremental evaluation state (accumulators, feature trackers).
 
@@ -573,7 +573,7 @@ print(f"Position score: {score} cp")
 score = evaluator.evaluate_full_centipawns(board)
 
 
-# In a search function (engine.py pattern):
+# In a search function (chess_engine.py pattern):
 
 class ChessEngine:
     def __init__(self, nn_type: str = "NNUE", model_path: str = "model/nnue.pt"):

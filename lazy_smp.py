@@ -22,13 +22,13 @@ from multiprocessing import Value
 
 import chess
 
-from cached_board import CachedBoard, int_to_move, move_to_int
-from config import MAX_THREADS, MAX_SCORE, MAX_NEGAMAX_DEPTH
+from cached_board import CachedBoard, int_to_move
+from config import MAX_THREADS
 
 
 def _mp_diag_print(msg: str):
     """Print diagnostic info string only when diagnostics are enabled."""
-    from engine import is_debug_enabled
+    from chess_engine import is_debug_enabled
     if is_debug_enabled():
         print(f"info string {msg}", flush=True)
 
@@ -88,8 +88,8 @@ def shutdown_worker_pool():
     _pool_initialized = False
 
 
-def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, time_limit: float,
-                     generation: int, result_queue: Queue, search_generation: Value):
+def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int, result_queue: Queue,
+                     search_generation: Value):
     """
     Lazy SMP worker thread.
 
@@ -97,11 +97,11 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, time_limit: float
     Workers start at different depths for search diversity.
     Communication happens through shared TT (implicit).
     """
-    import engine
+    import chess_engine
     from config import MAX_SCORE
 
-    # Get thread-local nn_evaluator (engine.py handles creation)
-    nn_evaluator = engine.get_nn_evaluator()
+    # Get thread-local nn_evaluator (chess_engine.py handles creation)
+    nn_evaluator = chess_engine.get_nn_evaluator()
 
     # Create board for this thread
     board = CachedBoard(fen)
@@ -125,14 +125,14 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, time_limit: float
     # Workers use the generation value for stop signaling instead
 
     # Clear thread-local heuristics (these are global but OK to share - minor impact)
-    for i in range(len(engine.killer_moves)):
-        engine.killer_moves[i] = [None, None]
-    for i in range(len(engine.killer_moves_int)):
-        engine.killer_moves_int[i] = [0, 0]
-    engine.history_heuristic.fill(0)
+    for i in range(len(chess_engine.killer_moves)):
+        chess_engine.killer_moves[i] = [None, None]
+    for i in range(len(chess_engine.killer_moves_int)):
+        chess_engine.killer_moves_int[i] = [0, 0]
+    chess_engine.history_heuristic.fill(0)
 
     # Reset node counter
-    engine.kpi['nodes'] = 0
+    chess_engine.kpi['nodes'] = 0
 
     def should_stop() -> bool:
         """Check if search should stop."""
@@ -141,7 +141,7 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, time_limit: float
         if search_generation.value != generation:
             return True
         # Also check TimeControl for external stop
-        if engine.TimeControl.stop_search:
+        if chess_engine.TimeControl.stop_search:
             return True
         return False
 
@@ -163,11 +163,11 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, time_limit: float
             # Look up TT for this position
             tt_move_int = 0
             zh = board.zobrist_hash()
-            if zh in engine.transposition_table:
-                tt_entry = engine.transposition_table[zh]
+            if zh in chess_engine.transposition_table:
+                tt_entry = chess_engine.transposition_table[zh]
                 tt_move_int = tt_entry.best_move_int
 
-            ordered_moves = list(engine.ordered_moves_int(board, depth, pv_move_int, tt_move_int))
+            ordered_moves = list(chess_engine.ordered_moves_int(board, depth, pv_move_int, tt_move_int))
 
             if not ordered_moves:
                 break
@@ -186,26 +186,26 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, time_limit: float
                     break
 
                 move = int_to_move(move_int)
-                engine.push_move(board, move, nn_evaluator)
+                chess_engine.push_move(board, move, nn_evaluator)
 
                 try:
-                    if engine.is_draw_by_repetition(board):
-                        score = engine.get_draw_score(board)
+                    if chess_engine.is_draw_by_repetition(board):
+                        score = chess_engine.get_draw_score(board)
                         child_pv = []
                     else:
                         # PVS: full window for first move, null window for rest
                         if move_idx == 0:
-                            score, child_pv = engine.negamax(board, depth - 1, -beta, -alpha,
+                            score, child_pv = chess_engine.negamax(board, depth - 1, -beta, -alpha,
                                                              allow_singular=True)
                             score = -score
                         else:
                             # Null window search
-                            score, child_pv = engine.negamax(board, depth - 1, -alpha - 1, -alpha,
+                            score, child_pv = chess_engine.negamax(board, depth - 1, -alpha - 1, -alpha,
                                                              allow_singular=True)
                             score = -score
                             if score > alpha and not should_stop():
                                 # Re-search with full window
-                                score, child_pv = engine.negamax(board, depth - 1, -beta, -alpha,
+                                score, child_pv = chess_engine.negamax(board, depth - 1, -beta, -alpha,
                                                                  allow_singular=True)
                                 score = -score
                 finally:
@@ -241,7 +241,7 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, time_limit: float
                 # Report completed depth
                 if not should_stop():
                     result = (worker_id, best_move_int, best_score, best_pv,
-                              engine.kpi['nodes'], max_completed_depth, generation)
+                              chess_engine.kpi['nodes'], max_completed_depth, generation)
                     result_queue.put(result)
 
                     depth_time = time.perf_counter() - depth_start
@@ -257,7 +257,7 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, time_limit: float
     # Send final result
     if best_move_int != 0 and not should_stop():
         result = (worker_id, best_move_int, best_score, best_pv,
-                  engine.kpi['nodes'], max_completed_depth, generation)
+                  chess_engine.kpi['nodes'], max_completed_depth, generation)
         result_queue.put(result)
 
 
@@ -276,20 +276,19 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
 
     # Fall back to single-threaded if not initialized
     if not _pool_initialized or _num_workers <= 1:
-        import engine
-        return engine.find_best_move(fen, max_depth=max_depth, time_limit=time_limit, clear_tt=clear_tt)
+        import chess_engine
+        return chess_engine.find_best_move(fen, max_depth=max_depth, time_limit=time_limit, clear_tt=clear_tt)
 
-    import engine
-    from config import MAX_SCORE
+    import chess_engine
 
     start_time = time.perf_counter()
 
     # Reset TimeControl for new search
-    engine.TimeControl.stop_search = False
-    engine.TimeControl.soft_stop = False
-    engine.TimeControl.start_time = start_time
-    engine.TimeControl.time_limit = time_limit
-    engine.TimeControl.hard_stop_time = None  # Don't use hard stop for MP - use generation instead
+    chess_engine.TimeControl.stop_search = False
+    chess_engine.TimeControl.soft_stop = False
+    chess_engine.TimeControl.start_time = start_time
+    chess_engine.TimeControl.time_limit = time_limit
+    chess_engine.TimeControl.hard_stop_time = None  # Don't use hard stop for MP - use generation instead
 
     # Increment generation to signal new search
     new_gen = _search_generation.value + 1
@@ -300,18 +299,18 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
 
     # Clear TT if requested
     if clear_tt:
-        engine.transposition_table.clear()
-        engine.qs_transposition_table.clear()
+        chess_engine.transposition_table.clear()
+        chess_engine.qs_transposition_table.clear()
 
     # Get legal moves to validate results later
     board = CachedBoard(fen)
     legal_moves = list(board.get_legal_moves_list())
 
     if not legal_moves:
-        return (chess.Move.null(), 0, [], 0, 0)
+        return chess.Move.null(), 0, [], 0, 0
 
     if len(legal_moves) == 1:
-        return engine.find_best_move(fen, max_depth=max_depth, time_limit=time_limit, clear_tt=clear_tt)
+        return chess_engine.find_best_move(fen, max_depth=max_depth, time_limit=time_limit, clear_tt=clear_tt)
 
     _mp_diag_print(f"Lazy SMP search gen={current_generation} with {_num_workers} threads")
     _mp_diag_print(f"FEN: {fen[:60]}...")
@@ -399,7 +398,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     # Process results
     if best_result is None:
         _mp_diag_print("No results from workers, using first legal move")
-        return (legal_moves[0], 0, [legal_moves[0]], 0, 0)
+        return legal_moves[0], 0, [legal_moves[0]], 0, 0
 
     move_int, score, pv_int, nodes, depth = best_result
     best_move = int_to_move(move_int)
@@ -407,7 +406,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     # Validate move is legal
     if best_move not in legal_moves:
         _mp_diag_print(f"ERROR: Best move {best_move.uci()} is illegal!")
-        return (legal_moves[0], 0, [legal_moves[0]], 0, 0)
+        return legal_moves[0], 0, [legal_moves[0]], 0, 0
 
     # Convert PV to moves
     best_pv = [int_to_move(m) for m in pv_int if m != 0]
@@ -415,7 +414,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     elapsed = time.perf_counter() - start_time
     nps = int(total_nodes / elapsed) if elapsed > 0 else 0
 
-    return (best_move, score, best_pv, total_nodes, nps)
+    return best_move, score, best_pv, total_nodes, nps
 
 
 def stop_parallel_search():
