@@ -107,7 +107,7 @@ UNSTABLE_MIN_DEPTH = _env_int('UNSTABLE_MIN_DEPTH', 5)  # Minimum depth when sco
 
 # Time management
 # Tuning of time management should be done playing against stockfish (not using engine_test.py)
-EMERGENCY_TIME_RESERVE = _env_float('EMERGENCY_TIME_RESERVE', 0.50)  # FIX V4: Always keep at least 0.5s
+EMERGENCY_TIME_RESERVE = _env_float('EMERGENCY_TIME_RESERVE', 0.50)  # Always keep at least 0.5s
 ESTIMATED_BRANCHING_FACTOR = _env_float('ESTIMATED_BRANCHING_FACTOR', 4.0)
 TIME_SAFETY_MARGIN_RATIO = _env_float('TIME_SAFETY_MARGIN_RATIO', 0.45)  # Only start new depth if 70%+ time available
 
