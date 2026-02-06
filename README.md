@@ -16,9 +16,10 @@ NeuroFish was developed to explore the practical limits of building a competitiv
 - **Dual NN Architectures**: Supports both DNN (Deep Neural Network) and NNUE (Efficiently Updatable Neural Network) evaluation
 - **UCI Protocol Support**: Compatible with any UCI-compliant chess GUI
 - **Opening Book Support**: Polyglot opening book integration with weighted random selection
-- **Advanced Search Techniques**: Negamax with alpha-beta pruning, null-move pruning, late move reductions (LMR), futility pruning, aspiration windows, and singular extensions
+- **Advanced Search Techniques**: Negamax with alpha-beta pruning, null-move pruning, late move reductions (LMR), futility pruning, razoring, SEE pruning, aspiration windows, and singular extensions
 - **Transposition Tables**: Zobrist hashing with configurable table sizes
-- **Multiprocessing Support**: Parallel search across multiple CPU cores
+- **Lazy SMP Parallel Search**: Multi-threaded search using the Lazy SMP algorithm with shared transposition table
+- **Pondering**: Thinks on the opponent's time for stronger play under time controls
 - **Incremental NN Updates**: Efficient accumulator-based neural network updates
 - **Cython Acceleration**: Performance-critical operations optimized with Cython
 - **C++ Backend Option**: Optional high-performance C++ move generation via Disservin's chess-library
@@ -76,6 +77,7 @@ neurofish/
 ├── build/                   # Build artifacts
 ├── build.sh                 # Cython extension build script
 ├── cached_board.py          # Board wrapper with caching and C++ backend support
+├── chess_engine.py          # Main search engine (negamax, alpha-beta)
 ├── config.py                # Engine configuration and parameters
 ├── cpp_board/               # C++ chess library integration
 │   └── README.md            # C++ backend documentation
@@ -83,11 +85,10 @@ neurofish/
 ├── docs/                    # Documentation
 │   ├── parameter_tuning_guide.md
 │   └── time_depth_management_guide.md
-├── engine.py                # Main search engine (negamax, alpha-beta)
 ├── environment.yml          # Conda environment specification
+├── lazy_smp.py              # Lazy SMP parallel search implementation
 ├── libs/                    # Compiled shared libraries (.so files)
 ├── model/                   # Trained neural network models
-├── mp_search.py             # Multiprocessing search implementation
 ├── nn_evaluator.py          # Neural network evaluation interface
 ├── nn_inference.py          # NN inference and feature extraction
 ├── nn_ops_fallback.py       # Pure Python fallback for Cython operations
@@ -95,6 +96,7 @@ neurofish/
 ├── nn_train/                # Neural network training module
 │   └── README.md            # Training documentation
 ├── pgn/                     # PGN game files
+├── requirements.txt         # pip requirements file
 ├── setup.py                 # Cython build configuration
 ├── test/                    # Test suite
 │   └── README.md            # Testing documentation
@@ -228,14 +230,14 @@ conda activate neurofish
 |----------------------------------|------------|
 | C++ Board                        | +95        |
 | Cython acceleration              | +107       |
-| QUNATIZATION (INT8)              | +46        |
-| QUNATIZATION (INT16)             | -47        |
-| BLAS multi-core without Lazy-SMP | +35        |
-| BLAS multi-core with Lazy-SMP    | TBD        |
+| Quantization (INT8)              | +46        |
+| Quantization (INT16)             | -47        |
+| BLAS multi-core without Lazy SMP | +35        |
+| BLAS multi-core with Lazy SMP    | TBD        |
 
-**Analysis:** TBD.
+**Analysis:** The two largest gains come from reducing Python interpreter overhead: Cython-optimized NN operations (+107) and C++ move generation (+95) together contribute over 200 ELO, underscoring that raw execution speed is the dominant bottleneck in a Python chess engine. Faster evaluation and move generation translate directly into deeper search within the same time budget. INT8 quantization (+46) further accelerates NN inference by leveraging narrower integer arithmetic, while INT16 quantization (-47) regresses because its wider data types reduce SIMD throughput without a compensating improvement in evaluation accuracy. BLAS multi-core (+35) provides a modest gain by parallelizing the matrix operations within NN inference—this benefit is orthogonal to search-level parallelism and stacks with single-threaded optimizations.
 
-### Lazy-SMP Performance
+### Lazy SMP Performance
 
 | Threads | ELO  |
 |---------|------|
@@ -243,7 +245,7 @@ conda activate neurofish
 | 2       | 2461 |
 | 4       | 2420 |
 
-**Analysis:** TBD.
+**Analysis:** Two threads yield a modest +14 ELO over single-threaded search, but scaling to four threads regresses by −27 ELO below the single-threaded baseline. This is a direct consequence of Python's Global Interpreter Lock (GIL): while NumPy and the NN inference layers release the GIL during heavy computation, the search logic itself—move ordering, alpha-beta recursion, transposition table lookups—runs under the GIL and becomes a contention bottleneck as thread count increases. At two threads the diversity benefit of Lazy SMP (workers exploring slightly different search trees and populating the shared transposition table) narrowly outweighs the GIL overhead, but at four threads the contention cost dominates. The optimal configuration for NeuroFish is therefore two threads; meaningful scaling beyond this would require moving the core search loop to C/C++ or to a GIL-free runtime.
 
 ## Future Work
 
@@ -253,7 +255,7 @@ The ~2500 ELO rating likely represents the practical ceiling for a Python-based 
 
 1. **Interpreted Language Overhead**: Python's interpreted nature adds significant overhead compared to compiled languages. Each operation involves type checking, reference counting, and interpreter dispatch.
 
-2. **Global Interpreter Lock (GIL)**: Python's GIL prevents true parallel execution of Python bytecode, limiting the effectiveness of multiprocessing and making it impossible to share data structures efficiently between threads.
+2. **Global Interpreter Lock (GIL)**: Python's GIL prevents true parallel execution of Python bytecode, limiting the effectiveness of multithreading and making it impossible to share data structures efficiently between threads. The Lazy SMP results above illustrate this directly—scaling beyond two threads produces negative returns.
 
 3. **Memory Management**: Python's object model and garbage collection add latency that compounds during deep searches with millions of nodes.
 
