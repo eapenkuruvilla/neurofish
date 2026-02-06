@@ -277,6 +277,8 @@ Developing a C++ engine leveraging the architectural insights and techniques ref
 - **[python-chess](https://github.com/niklasf/python-chess)** — Pure Python chess library providing the core board representation
 - **[pybind11](https://github.com/pybind/pybind11)** — C++/Python interoperability for the C++ backend
 - **[Lichess.org](https://lichess.org)** — Source of the 1 billion training positions
+- **[Vultr.com](https://lichess.org)** — GPU and cloud resources for the AI training
+- **[JetBrains PyCharm](https://lichess.org)** — IDE for the code development
 
 ### AI Assistance
 

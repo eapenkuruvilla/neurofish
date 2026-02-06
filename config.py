@@ -59,7 +59,7 @@ MAX_THREADS = _env_int('MAX_THREADS', 2)  # 1 or less disables multiprocessing, 
 IS_MULTI_CORE_BLAS = _env_bool('IS_MULTI_CORE_BLAS', False)
 IS_NN_ENABLED = _env_bool('IS_NN_ENABLED', True)
 NN_TYPE = _env_str('NN_TYPE', "NNUE")
-L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "INT8")  # Options: "NONE" (FP32), "INT8", "INT16"
+L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "NONE")  # Options: "NONE" (FP32), "INT8", "INT16"
 FULL_NN_EVAL_FREQ = _env_int('FULL_NN_EVAL_FREQ', 3000)  # Increase to 50_000 after initial testing
 
 # Note when NN related parameters are optimized, use real games as positional understanding will be reflected.
@@ -132,7 +132,7 @@ SEE_PRUNING_MAX_DEPTH = _env_int('SEE_PRUNING_MAX_DEPTH', 6)  # Only apply at sh
 # Futility Pruning - skip quiet moves when position is hopeless
 FUTILITY_PRUNING_ENABLED = _env_bool('FUTILITY_PRUNING_ENABLED', True)
 # Note: FUTILITY_MARGIN is a list - use JSON format in env var, e.g. "[0,150,300,450]"
-_futility_default = [0, 50, 100, 350]
+_futility_default = [0, 150, 300, 450]
 _futility_env = os.environ.get('FUTILITY_MARGIN')
 if _futility_env:
     FUTILITY_MARGIN = eval(_futility_env)
