@@ -6,6 +6,7 @@ from pathlib import Path
 import chess
 import chess.polyglot
 
+import chess_engine
 from config import IS_PONDERING_ENABLED
 from chess_engine import (find_best_move, MAX_NEGAMAX_DEPTH, TimeControl, dnn_eval_cache,
                           clear_game_history, game_position_history, HOME_DIR, kpi,
@@ -71,7 +72,7 @@ def uci_loop():
             print(f"option name ResignThreshold type spin default {RESIGN_THRESHOLD} min -10000 max 0")
             print(f"option name ResignMoves type spin default {RESIGN_CONSECUTIVE_MOVES} min 1 max 10")
             print("option name Ponder type check default true")
-            print(f"option name Threads type spin default {mp_search.MAX_THREADS} min 1 max 64")
+            print(f"option name Threads type spin default {chess_engine.MAX_THREADS} min 1 max 64")
             print("uciok", flush=True)
 
         elif command == "isready":
@@ -108,7 +109,7 @@ def uci_loop():
                     use_ponder = value.lower() == "true"
                 elif name.lower() == "threads":
                     cores = int(value)
-                    mp_search.set_mp_cores(cores)
+                    lazy_smp.set_mp_cores(cores)
 
         elif command == "ucinewgame":
             # Print diagnostic summary from previous game (if any issues) when debug enabled
@@ -133,7 +134,7 @@ def uci_loop():
             # Stop any ongoing search (including ponder) before processing new position
             if search_thread and search_thread.is_alive():
                 TimeControl.stop_search = True
-                mp_search.stop_parallel_search()  # FIX: Also stop MP workers
+                lazy_smp.stop_parallel_search()  # FIX: Also stop MP workers
                 search_thread.join()
             is_pondering = False
             ponder_fen = None
@@ -289,9 +290,9 @@ def uci_loop():
 
                     # Use parallel search if MP enabled, otherwise single-threaded
                     try:
-                        if mp_search.is_mp_enabled():
+                        if lazy_smp.is_mp_enabled():
                             diag_print(f"Starting parallel search")
-                            best_move, score, pv, nodes, nps = mp_search.parallel_find_best_move(fen,
+                            best_move, score, pv, nodes, nps = lazy_smp.parallel_find_best_move(fen,
                                                                                                  max_depth=max_depth,
                                                                                                  time_limit=movetime)
                             diag_print(f"Parallel search returned: move={best_move}, score={score}")
@@ -412,7 +413,7 @@ def uci_loop():
 
                 # Stop the ponder search
                 TimeControl.stop_search = True
-                mp_search.stop_parallel_search()  # FIX: Signal MP workers to stop
+                lazy_smp.stop_parallel_search()  # FIX: Signal MP workers to stop
                 search_thread.join()
 
                 # Reset flags
@@ -485,8 +486,8 @@ def uci_loop():
 
                             try:
                                 # Search with warm TT (clear_tt=False)
-                                if mp_search.is_mp_enabled():
-                                    result = mp_search.parallel_find_best_move(fen,
+                                if lazy_smp.is_mp_enabled():
+                                    result = lazy_smp.parallel_find_best_move(fen,
                                                                                max_depth=MAX_NEGAMAX_DEPTH,
                                                                                time_limit=ponderhit_time_limit,
                                                                                clear_tt=False)
@@ -568,7 +569,7 @@ def uci_loop():
         elif command == "stop":
             diag_print(f"stop received, is_pondering={is_pondering}, ponder_hit_pending={ponder_hit_pending}")
             TimeControl.stop_search = True
-            mp_search.stop_parallel_search()  # Signal MP workers to stop
+            lazy_smp.stop_parallel_search()  # Signal MP workers to stop
 
             thread_finished = False
             if search_thread and search_thread.is_alive():
@@ -602,10 +603,10 @@ def uci_loop():
 
         elif command == "quit":
             TimeControl.stop_search = True
-            mp_search.stop_parallel_search()
+            lazy_smp.stop_parallel_search()
             if search_thread and search_thread.is_alive():
                 search_thread.join(timeout=2.0)  # FIX: Add timeout
-            mp_search.shutdown_worker_pool()  # Clean shutdown of workers
+            lazy_smp.shutdown_worker_pool()  # Clean shutdown of workers
             break
 
 
