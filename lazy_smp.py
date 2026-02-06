@@ -330,7 +330,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     for i in range(_num_workers):
         t = threading.Thread(
             target=_lazy_smp_worker,
-            args=(i, fen, max_depth, worker_time_limit, current_generation,
+            args=(i, fen, max_depth, current_generation,
                   _result_queue, _search_generation),
             daemon=True
         )
