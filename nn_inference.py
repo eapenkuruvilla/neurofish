@@ -794,7 +794,8 @@ class NNUEInference:
         # Pre-allocate quantized input buffer
         self._hidden_buf_q = np.empty(self.hidden_size * 2, dtype=np.int8)
 
-        print(f"  L1 INT8 quantization: weight_scale={weight_scale:.6f}, combined_scale={self._l1_combined_scale:.8f}")
+        print(f"  L1 INT8 quantization: weight_scale={weight_scale:.6f}, combined_scale={self._l1_combined_scale:.8f}",
+              file=sys.stderr)
 
     def _setup_int16_quantization(self):
         """Initialize INT16 quantization for L1 layer."""
@@ -814,7 +815,8 @@ class NNUEInference:
         # Pre-allocate quantized input buffer
         self._hidden_buf_q = np.empty(self.hidden_size * 2, dtype=np.int16)
 
-        print(f"  L1 INT16 quantization: weight_scale={weight_scale:.6f}, combined_scale={self._l1_combined_scale:.10f}")
+        print(f"  L1 INT16 quantization: weight_scale={weight_scale:.6f}, combined_scale={self._l1_combined_scale:.10f}",
+              file=sys.stderr)
 
     def mark_dirty(self):
         """

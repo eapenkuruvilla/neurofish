@@ -1209,6 +1209,46 @@ def extract_pv_from_tt(board: CachedBoard, max_depth: int) -> List[chess.Move]:
     return pv_int_to_moves(pv_int)
 
 
+def validate_pv_int(board: CachedBoard, pv_int: List[int]) -> List[int]:
+    """
+    Validate a principal variation by replaying moves and truncating at the first illegal move.
+
+    This guards against TT race conditions in Lazy SMP where a move stored by one thread
+    for a different position can leak into another thread's PV via a shared transposition
+    table entry, producing a move that is illegal in the PV's actual position.
+
+    Args:
+        board: Current root board position (not modified).
+        pv_int: List of integer moves forming the PV.
+
+    Returns:
+        Validated PV truncated at the first illegal move.
+    """
+    if not pv_int:
+        return pv_int
+
+    validated = []
+    pushed = 0
+    try:
+        for move_int in pv_int:
+            if move_int == 0:
+                break
+            move = int_to_move(move_int)
+            if move not in board.get_legal_moves_list():
+                _diag_warn("pv_validation_truncated",
+                           f"PV validation: move {move.uci()} illegal at ply {pushed} in {board.fen()[:50]}")
+                break
+            validated.append(move_int)
+            board.push(move)
+            pushed += 1
+    finally:
+        # Restore board state
+        for _ in range(pushed):
+            board.pop()
+
+    return validated
+
+
 def age_heuristic_history():
     """Vectorized history aging using numpy."""
     global history_heuristic
@@ -1681,7 +1721,8 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
         if depth_completed and best_pv:
             elapsed = time.perf_counter() - TimeControl.start_time
             nps = int((kpi['nodes'] - nodes_start) / elapsed) if elapsed > 0 else 0
-            pv_uci = ' '.join(int_to_move(m).uci() for m in best_pv)
+            validated_pv = validate_pv_int(board, best_pv)
+            pv_uci = ' '.join(int_to_move(m).uci() for m in validated_pv)
             print(
                 f"info depth {depth} score cp {best_score} nodes {kpi['nodes']} nps {nps} pv {pv_uci}",
                 flush=True)
@@ -1844,8 +1885,9 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
         _diag_warn("score_out_of_bounds", f"Score {best_score} exceeds MAX_SCORE {MAX_SCORE}")
 
     # Convert integer move and PV to chess.Move for return value
+    # Validate PV to guard against Lazy SMP TT race conditions
     best_move = int_to_move(best_move_int) if best_move_int != 0 else chess.Move.null()
-    best_pv_moves = pv_int_to_moves(best_pv)
+    best_pv_moves = pv_int_to_moves(validate_pv_int(board, best_pv))
 
     return best_move, best_score, best_pv_moves, kpi['nodes'] - nodes_start, nps
 
