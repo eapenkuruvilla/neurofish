@@ -24,8 +24,6 @@ import chess
 
 import config
 from cached_board import CachedBoard, int_to_move
-from config import MAX_THREADS
-
 
 def _mp_diag_print(msg: str):
     """Print diagnostic info string only when diagnostics are enabled."""
@@ -144,6 +142,9 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int, 
         # Also check TimeControl for external stop
         if chess_engine.TimeControl.stop_search:
             return True
+        # Check soft_stop (set by check_time when time limit reached, e.g. after ponderhit)
+        if chess_engine.TimeControl.soft_stop:
+            return True
         return False
 
     try:
@@ -261,9 +262,12 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int, 
                   chess_engine.kpi['nodes'], max_completed_depth, generation)
         result_queue.put(result)
 
+    # Return NN evaluator to pool for reuse
+    chess_engine.return_nn_evaluator_to_pool()
+
 
 def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[float] = None,
-                            clear_tt: bool = True) -> Tuple[Optional[chess.Move], int, List[chess.Move], int, float]:
+                            clear_tt: bool = True, use_existing_time_control: bool = False) -> Tuple[Optional[chess.Move], int, List[chess.Move], int, float]:
     """
     Find best move using Lazy SMP parallel search.
 
@@ -278,18 +282,25 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     # Fall back to single-threaded if not initialized
     if not _pool_initialized or _num_workers <= 1:
         import chess_engine
-        return chess_engine.find_best_move(fen, max_depth=max_depth, time_limit=time_limit, clear_tt=clear_tt)
+        return chess_engine.find_best_move(fen, max_depth=max_depth, time_limit=time_limit,
+                                          clear_tt=clear_tt,
+                                          use_existing_time_control=use_existing_time_control)
 
     import chess_engine
 
     start_time = time.perf_counter()
 
-    # Reset TimeControl for new search
-    chess_engine.TimeControl.stop_search = False
-    chess_engine.TimeControl.soft_stop = False
-    chess_engine.TimeControl.start_time = start_time
-    chess_engine.TimeControl.time_limit = time_limit
-    chess_engine.TimeControl.hard_stop_time = None  # Don't use hard stop for MP - use generation instead
+    # Reset TimeControl for new search (unless caller manages it, e.g. ponder)
+    if not use_existing_time_control:
+        chess_engine.TimeControl.stop_search = False
+        chess_engine.TimeControl.soft_stop = False
+        chess_engine.TimeControl.start_time = start_time
+        chess_engine.TimeControl.time_limit = time_limit
+        chess_engine.TimeControl.hard_stop_time = None  # Don't use hard stop for MP - use generation instead
+    else:
+        _mp_diag_print(f"Using existing TimeControl (time_limit={chess_engine.TimeControl.time_limit})")
+        # Use TimeControl.start_time as the reference point
+        start_time = chess_engine.TimeControl.start_time or start_time
 
     # Increment generation to signal new search
     new_gen = _search_generation.value + 1
@@ -311,7 +322,9 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         return chess.Move.null(), 0, [], 0, 0
 
     if len(legal_moves) == 1:
-        return chess_engine.find_best_move(fen, max_depth=max_depth, time_limit=time_limit, clear_tt=clear_tt)
+        return chess_engine.find_best_move(fen, max_depth=max_depth, time_limit=time_limit,
+                                          clear_tt=clear_tt,
+                                          use_existing_time_control=use_existing_time_control)
 
     _mp_diag_print(f"Lazy SMP search gen={current_generation} with {_num_workers} threads")
     _mp_diag_print(f"FEN: {fen[:60]}...")
@@ -347,6 +360,12 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         # Check for external stop
         if _search_generation.value == 0:
             _mp_diag_print("Stop signal detected")
+            break
+
+        # Check for external stop via TimeControl (e.g. UCI 'stop' or hard_stop from ponderhit time)
+        if chess_engine.TimeControl.stop_search:
+            _mp_diag_print("TimeControl.stop_search detected, stopping workers")
+            _search_generation.value = 0
             break
 
         # Check for timeout

@@ -49,6 +49,7 @@ class TimeControl:
     stop_search = False  # Set by UCI 'stop' command - always honored
     soft_stop = False  # Set by time limit - ignored until MIN_DEPTH reached
     hard_stop_time = None  # FIX V3: Absolute time when search MUST stop (150% of time_limit)
+    is_ponder_search = False  # True during ponder search - skip early abort before NN init
 
 
 TTEntry = namedtuple("TTEntry", ["depth", "score", "flag", "best_move_int"])
@@ -173,6 +174,10 @@ game_position_history: dict[int, int] = {}  # zobrist_hash -> count
 # Each thread gets its own evaluator to avoid state conflicts
 _thread_local = threading.local()
 
+# NN evaluator pool for reuse across search threads (avoids ~0.15s creation per thread)
+_nn_eval_pool: list = []  # Pool of idle NNEvaluator instances
+_nn_eval_pool_lock = threading.Lock()
+
 # Main thread's nn_evaluator (also serves as template for creating thread-local copies)
 if NN_TYPE == "DNN":
     nn_evaluator = DNNEvaluator.create(CachedBoard(), NN_TYPE, MODEL_PATH)  # Loads model
@@ -185,7 +190,8 @@ def get_nn_evaluator() -> NNEvaluator:
     Get the nn_evaluator for the current thread.
 
     For the main thread, returns the global nn_evaluator.
-    For worker threads, creates and caches a thread-local instance.
+    For worker threads, creates and caches a thread-local instance
+    (reused from pool when possible to avoid ~0.15s creation overhead).
     """
     # Check if we're in main thread - use global evaluator
     if threading.current_thread() is threading.main_thread():
@@ -193,12 +199,34 @@ def get_nn_evaluator() -> NNEvaluator:
 
     # For worker threads, use thread-local evaluator
     if not hasattr(_thread_local, 'nn_evaluator'):
-        # Create a new evaluator instance for this thread using the factory method
-        thread_name = threading.current_thread().name
-        diag_print(f"Creating thread-local nn_evaluator for {thread_name}")
-        _thread_local.nn_evaluator = NNEvaluator.create(CachedBoard(), NN_TYPE, MODEL_PATH)
+        # Try to get an evaluator from the pool first
+        pooled = None
+        with _nn_eval_pool_lock:
+            if _nn_eval_pool:
+                pooled = _nn_eval_pool.pop()
+
+        if pooled is not None:
+            thread_name = threading.current_thread().name
+            diag_print(f"Reusing pooled nn_evaluator for {thread_name}")
+            _thread_local.nn_evaluator = pooled
+        else:
+            # Create a new evaluator instance for this thread using the factory method
+            thread_name = threading.current_thread().name
+            diag_print(f"Creating thread-local nn_evaluator for {thread_name}")
+            _thread_local.nn_evaluator = NNEvaluator.create(CachedBoard(), NN_TYPE, MODEL_PATH)
 
     return _thread_local.nn_evaluator
+
+
+def return_nn_evaluator_to_pool():
+    """
+    Return this thread's nn_evaluator to the pool for reuse.
+    Call this at the end of a search thread before it exits.
+    """
+    if hasattr(_thread_local, 'nn_evaluator'):
+        with _nn_eval_pool_lock:
+            _nn_eval_pool.append(_thread_local.nn_evaluator)
+        del _thread_local.nn_evaluator
 
 
 PIECE_VALUES = {
@@ -1312,7 +1340,8 @@ def pv_to_san(board: CachedBoard, pv: List[chess.Move]) -> str:
     return " ".join(san_moves)
 
 
-def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=True, expected_best_moves=None) -> \
+def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=True,
+                   expected_best_moves=None, use_existing_time_control=False) -> \
         Tuple[Optional[chess.Move], int, List[chess.Move], int, float]:
     """
     Finds the best move for a given FEN using iterative deepening negamax with alpha-beta pruning,
@@ -1325,6 +1354,9 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
         expected_best_moves: For testing - stop early if best move matches
         clear_tt: If True, clear transposition tables before search. Set to False
                   on ponderhit to benefit from warm TT.
+        use_existing_time_control: If True, skip TimeControl initialization.
+                  Used for ponder searches where TimeControl is set up by the
+                  main thread (avoids race with ponderhit updates).
 
     Returns:
         Tuple of (best_move, score, pv, nodes, nps)
@@ -1332,16 +1364,20 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
     global _qs_stats
 
     # -------- Initialize time control --------
-    TimeControl.time_limit = time_limit
-    TimeControl.stop_search = False
-    TimeControl.soft_stop = False  # Reset soft stop
-    TimeControl.start_time = time.perf_counter()
-    # FIX V3: Set hard stop at 150% of time limit (but at least 0.5s grace period)
-    if time_limit:
-        grace_period = max(time_limit * 0.5, 0.3)  # At least 0.3s or 50% extra
-        TimeControl.hard_stop_time = TimeControl.start_time + time_limit + grace_period
+    if not use_existing_time_control:
+        TimeControl.time_limit = time_limit
+        TimeControl.stop_search = False
+        TimeControl.soft_stop = False  # Reset soft stop
+        TimeControl.start_time = time.perf_counter()
+        # FIX V3: Set hard stop at 150% of time limit (but at least 0.5s grace period)
+        if time_limit:
+            grace_period = max(time_limit * 0.5, 0.3)  # At least 0.3s or 50% extra
+            TimeControl.hard_stop_time = TimeControl.start_time + time_limit + grace_period
+        else:
+            TimeControl.hard_stop_time = None
     else:
-        TimeControl.hard_stop_time = None
+        diag_print(f"TimeControl: using existing (time_limit={TimeControl.time_limit}, "
+                   f"stop={TimeControl.stop_search}, soft={TimeControl.soft_stop})")
     nodes_start = kpi['nodes']
     nps = 0
 
@@ -1392,7 +1428,10 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
         diag_print(f"DEBUG: Board init took {board_init_time:.3f}s")
 
     # -------- CRITICAL: Check for stop before NN reset (which can be slow) --------
-    if TimeControl.stop_search:
+    # Skip this check during ponder search — we want the NN loaded so the search
+    # can do useful work even if ponderhit/stop arrives shortly after.
+    # On ponder miss, GUI ignores bestmove anyway, so a small delay is acceptable.
+    if TimeControl.stop_search and not TimeControl.is_ponder_search:
         diag_print(f"DEBUG: Stop received before NN reset, aborting")
         # Return first legal move as fallback
         legal = board.get_legal_moves_list()

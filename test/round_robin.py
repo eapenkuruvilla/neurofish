@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-round_robin.py — Self-play parameter tuning for Neurofish chess engine.
+tune.py — Self-play parameter tuning for Neurofish chess engine.
 
 Runs a round-robin tournament via cutechess-cli where each participant
 is the same engine configured with a different value of one UCI parameter.
@@ -12,13 +12,13 @@ Prerequisites:
   - An opening book (.epd, .pgn, or .bin)
 
 Usage:
-    python3 round_robin.py PARAM_NAME val1 val2 val3 ... [options]
+    python3 tune.py PARAM_NAME val1 val2 val3 ... [options]
 
 Examples:
-    python3 round_robin.py QS_SOFT_STOP_DIVISOR 7.0 8.0 9.0 10.0 --games 30
-    python3 round_robin.py FUTILITY_MAX_DEPTH 2 3 4 --games 50 --tc 40/60+0.5
-    python3 round_robin.py MAX_QS_MOVES "[12,6,4,2]" "[10,5,3,2]" "[15,8,5,3]"
-    python3 round_robin.py ASPIRATION_WINDOW 50 75 100 --book openings.epd
+    python3 tune.py QS_SOFT_STOP_DIVISOR 7.0 8.0 9.0 10.0 --games 30
+    python3 tune.py FUTILITY_MAX_DEPTH 2 3 4 --games 50 --tc 40/60+0.5
+    python3 tune.py MAX_QS_MOVES "[12,6,4,2]" "[10,5,3,2]" "[15,8,5,3]"
+    python3 tune.py ASPIRATION_WINDOW 50 75 100 --book openings.epd
 """
 
 import argparse
@@ -32,8 +32,6 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-
-import config
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -203,6 +201,12 @@ def compute_los(wins: float, losses: float) -> float:
 # ║  cutechess-cli output parsing                               ║
 # ╚══════════════════════════════════════════════════════════════╝
 
+# Matches: "Finished game 1 (nf_INT8 vs nf_INT16): 1-0 {White mates}"
+_FINISHED_RE = re.compile(
+    r'Finished game \d+ \((\S+) vs (\S+)\):\s*(\S+)'
+)
+
+# Also try the "Score of X vs Y" lines (non-tournament or 2-engine mode)
 _SCORE_RE = re.compile(
     r'Score of (\S+) vs (\S+):\s*(\d+)\s*-\s*(\d+)\s*-\s*(\d+)'
 )
@@ -211,24 +215,58 @@ _SCORE_RE = re.compile(
 def parse_cutechess_output(output: str,
                            player_names: List[str]) -> Optional[BradleyTerry]:
     """
-    Parse cutechess-cli stdout for 'Score of X vs Y: W - L - D' lines
-    and build a BradleyTerry model.
+    Parse cutechess-cli stdout and build a BradleyTerry model.
+
+    Handles two output formats:
+    1. Round-robin tournaments: "Finished game N (A vs B): result {reason}"
+    2. Head-to-head matches:    "Score of A vs B: W - L - D [pct] N"
     """
     name_set = set(player_names)
-    bt = BradleyTerry(player_names)
-    found = False
+
+    # ── collect pairwise W-L-D from individual game results ──
+    pair_results: Dict[Tuple[str, str], List[int]] = {}  # (a,b) -> [wins_a, wins_b, draws]
 
     for line in output.splitlines():
-        m = _SCORE_RE.search(line)
-        if not m:
-            continue
-        pa, pb = m.group(1), m.group(2)
-        w, l, d = int(m.group(3)), int(m.group(4)), int(m.group(5))
-        if pa in name_set and pb in name_set:
-            bt.add_result(pa, pb, w, l, d)
-            found = True
+        # Try "Finished game" lines first (round-robin)
+        m = _FINISHED_RE.search(line)
+        if m:
+            pa, pb, result = m.group(1), m.group(2), m.group(3)
+            if pa not in name_set or pb not in name_set:
+                continue
 
-    return bt if found else None
+            key = (pa, pb)
+            if key not in pair_results:
+                pair_results[key] = [0, 0, 0]
+
+            if result == '1-0':
+                pair_results[key][0] += 1      # pa wins
+            elif result == '0-1':
+                pair_results[key][1] += 1      # pb wins
+            elif result in ('1/2-1/2', '*'):
+                pair_results[key][2] += 1      # draw
+            continue
+
+        # Fall back to "Score of" summary lines (2-engine mode)
+        m = _SCORE_RE.search(line)
+        if m:
+            pa, pb = m.group(1), m.group(2)
+            w, l, d = int(m.group(3)), int(m.group(4)), int(m.group(5))
+            if pa in name_set and pb in name_set:
+                key = (pa, pb)
+                if key not in pair_results:
+                    pair_results[key] = [0, 0, 0]
+                pair_results[key][0] += w
+                pair_results[key][1] += l
+                pair_results[key][2] += d
+
+    if not pair_results:
+        return None
+
+    bt = BradleyTerry(player_names)
+    for (pa, pb), (w, l, d) in pair_results.items():
+        bt.add_result(pa, pb, w, l, d)
+
+    return bt
 
 
 # ╔══════════════════════════════════════════════════════════════╗
@@ -443,7 +481,7 @@ Examples:
                      help="Games per pair (default: 30)")
     grp.add_argument("--tc", default="40/120+1",
                      help="Time control (default: 40/120+1)")
-    grp.add_argument("--threads", "-t", type=int, default=config.MAX_THREADS,
+    grp.add_argument("--threads", "-t", type=int, default=None,
                      help="UCI Threads per engine instance")
     grp.add_argument("--book", "-b", default=f"{SCRIPT_DIR}/../book/komodo.bin",
                      help="Opening book (.epd, .pgn, or .bin)")
@@ -452,7 +490,7 @@ Examples:
     grp2 = parser.add_argument_group("paths")
     grp2.add_argument("--engine-cmd", "-e", default=None,
                       help="Path to engine executable (default: auto-detect uci.sh)")
-    grp2.add_argument("--cutechess", "-c", default=f"{SCRIPT_DIR}/../../cutechess/build/cutechess-cli",
+    grp2.add_argument("--cutechess", "-c", default=None,
                       help="Path to cutechess-cli (default: auto-detect)")
 
     # adjudication
@@ -476,9 +514,9 @@ Examples:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     if not args.engine_cmd:
         for cand in [
-            os.path.join(script_dir, "../uci.sh"),
-            os.path.join(script_dir, "../..", "uci.sh"),
-            os.path.join(script_dir, "../..", "src", "uci.sh"),
+            os.path.join(script_dir, "uci.sh"),
+            os.path.join(script_dir, "..", "uci.sh"),
+            os.path.join(script_dir, "..", "src", "uci.sh"),
         ]:
             if os.path.isfile(cand):
                 args.engine_cmd = os.path.abspath(cand)
@@ -493,9 +531,9 @@ Examples:
             args.cutechess = "cutechess-cli"
         else:
             for cand in [
-                os.path.join(script_dir, "../..", "..", "cutechess",
+                os.path.join(script_dir, "..", "..", "cutechess",
                              "build", "cutechess-cli"),
-                os.path.join(script_dir, "../..", "cutechess-cli"),
+                os.path.join(script_dir, "..", "cutechess-cli"),
             ]:
                 if os.path.isfile(cand):
                     args.cutechess = os.path.abspath(cand)

@@ -55,7 +55,7 @@ DIAGNOSTIC = _env_bool('DIAGNOSTIC', False)  # Master switch for diagnostic outp
 debug_mode = _env_bool('DEBUG_MODE', False)  # Runtime toggle via UCI "debug on/off"
 
 # Multiprocessing configuration
-MAX_THREADS = _env_int('MAX_THREADS', 2)  # 1 or less disables multiprocessing, UCI option "Threads"
+MAX_THREADS = _env_int('MAX_THREADS', 1)  # 1 or less disables multiprocessing, UCI option "Threads"
 MULTI_CORE_BLAS = _env_bool('MULTI_CORE_BLAS', False)
 NN_ENABLED = _env_bool('NN_ENABLED', True)
 NN_TYPE = _env_str('NN_TYPE', "NNUE")
