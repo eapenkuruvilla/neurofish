@@ -6,7 +6,6 @@ import threading
 from collections import namedtuple
 from pathlib import Path
 from typing import List, Tuple, Optional
-import random
 import chess
 import chess.polyglot
 import numpy as np
@@ -21,17 +20,21 @@ HOME_DIR = "neurofish"
 DNN_MODEL_FILEPATH = CURR_DIR / f"../{HOME_DIR}" / 'model' / 'dnn.pt'
 NNUE_MODEL_FILEPATH = CURR_DIR / f"../{HOME_DIR}" / 'model' / 'nnue.pt'
 
-if not IS_MULTI_CORE_BLAS:
+if not MULTI_CORE_BLAS:
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["MKL_NUM_THREADS"] = "1"
     os.environ["OMP_NUM_THREADS"] = "1"
+else:
+    del os.environ['OPENBLAS_NUM_THREADS']
+    del os.environ['MKL_NUM_THREADS']
+    del os.environ['OMP_NUM_THREADS']
 
 MODEL_PATH = str(DNN_MODEL_FILEPATH if NN_TYPE == "DNN" else NNUE_MODEL_FILEPATH)
 
 
 def is_debug_enabled() -> bool:
     """Check if diagnostic output is enabled (either via IS_DIAGNOSTIC or UCI debug on)."""
-    return IS_DIAGNOSTIC or debug_mode
+    return DIAGNOSTIC or debug_mode
 
 
 def set_debug_mode(enabled: bool):
@@ -454,6 +457,7 @@ def ordered_moves_int(board: CachedBoard, depth: int, pv_move_int: int = 0, tt_m
         List of integer moves, sorted by score (best first)
     """
     # Ensure move info is precomputed using integer keys
+    import  random
     board.precompute_move_info_int()
 
     scored_moves = []
@@ -628,7 +632,7 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
     # Hard stop always honored immediately
     if TimeControl.stop_search:
         # Skip game_over check - we got here via legal move
-        if IS_NN_ENABLED and q_depth <= QS_DEPTH_MAX_NN_EVAL:
+        if NN_ENABLED and q_depth <= QS_DEPTH_MAX_NN_EVAL:
             return evaluate_nn(board, skip_game_over=True), []
         else:
             return evaluate_classical(board, skip_game_over=True), []
@@ -642,7 +646,7 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
             _qs_stats["time_cutoffs"] += 1
             _diag_warn("qs_time_cutoff", f"QS soft-stopped at depth {q_depth}")
             # Skip game_over check - we got here via legal move
-            if IS_NN_ENABLED and q_depth <= QS_DEPTH_MAX_NN_EVAL:
+            if NN_ENABLED and q_depth <= QS_DEPTH_MAX_NN_EVAL:
                 return evaluate_nn(board, skip_game_over=True), []
             else:
                 return evaluate_classical(board, skip_game_over=True), []
@@ -654,7 +658,7 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
         _diag_warn("qs_depth_exceeded", f"QS hit depth {q_depth}, fen={board.fen()[:40]}")
         # Return static evaluation when QS goes too deep
         # Skip game_over check - we got here via legal move
-        if IS_NN_ENABLED and q_depth <= QS_DEPTH_MAX_NN_EVAL:
+        if NN_ENABLED and q_depth <= QS_DEPTH_MAX_NN_EVAL:
             return evaluate_nn(board, skip_game_over=True), []
         else:
             return evaluate_classical(board, skip_game_over=True), []
@@ -682,14 +686,14 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
     # than stand-pat
     if not is_check:
         is_dnn_eval = False
-        if IS_NN_ENABLED and q_depth <= QS_DEPTH_MIN_NN_EVAL:
+        if NN_ENABLED and q_depth <= QS_DEPTH_MIN_NN_EVAL:
             stand_pat = evaluate_nn(board)
             is_dnn_eval = True
         else:
             stand_pat = evaluate_classical(board)
 
         # if classical evaluation of stand_pat is close to beta, use NN evaluation.
-        if (not is_dnn_eval and IS_NN_ENABLED and q_depth <= QS_DEPTH_MAX_NN_EVAL
+        if (not is_dnn_eval and NN_ENABLED and q_depth <= QS_DEPTH_MAX_NN_EVAL
                 and abs(stand_pat) < STAND_PAT_MAX_NN_EVAL
                 and abs(stand_pat - beta) < QS_DELTA_MAX_NN_EVAL):
             stand_pat = evaluate_nn(board)
@@ -704,7 +708,7 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
             return stand_pat, []  # ✅ Return stand_pat (it's the best we can do)
 
         # If stand_pat is going to be alpha or stan_pat and alpha are close, use NN evaluation.
-        if (not is_dnn_eval and IS_NN_ENABLED
+        if (not is_dnn_eval and NN_ENABLED
                 and q_depth <= QS_DEPTH_MAX_NN_EVAL
                 and abs(stand_pat) < STAND_PAT_MAX_NN_EVAL
                 and (stand_pat > alpha or abs(stand_pat - alpha) < QS_DELTA_MAX_NN_EVAL)):
@@ -1418,7 +1422,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
             best_score = -MAX_SCORE
             for move in legal_moves[:10]:  # Only look at first 10 moves
                 push_move(board, move, get_nn_evaluator())
-                score = -evaluate_nn(board) if IS_NN_ENABLED else -evaluate_classical(board)
+                score = -evaluate_nn(board) if NN_ENABLED else -evaluate_classical(board)
                 board.pop()
                 get_nn_evaluator().pop()
                 if score > best_score:

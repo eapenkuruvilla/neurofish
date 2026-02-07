@@ -22,6 +22,7 @@ from multiprocessing import Value
 
 import chess
 
+import config
 from cached_board import CachedBoard, int_to_move
 from config import MAX_THREADS
 
@@ -423,14 +424,14 @@ def stop_parallel_search():
         _search_generation.value = 0
 
 
-def set_mp_cores(cores: int):
-    """Set number of cores and initialize pool."""
+def set_lazy_smp_threads(threads: int):
+    """Set number of threads and initialize pool."""
     import config
-    if cores > config.MAX_THREADS:
-        cores = config.MAX_THREADS
+    if threads > config.MAX_THREADS:
+        threads = config.MAX_THREADS
 
-    if cores > 1:
-        init_worker_pool(cores)
+    if threads > 1:
+        init_worker_pool(threads)
     else:
         shutdown_worker_pool()
 
@@ -442,7 +443,7 @@ def is_mp_enabled() -> bool:
 
 def main():
     """Test function."""
-    set_mp_cores(MAX_THREADS)
+    set_lazy_smp_threads(config.MAX_THREADS)
     time.sleep(0.5)
 
     try:

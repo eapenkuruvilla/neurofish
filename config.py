@@ -46,18 +46,18 @@ def _env_str(key, default):
 MAX_SCORE = _env_int('MAX_SCORE', 10_000)
 TANH_SCALE = _env_int('TANH_SCALE', 410)  # Stockfish value
 
-IS_PONDERING_ENABLED = _env_bool('IS_PONDERING_ENABLED', True)
+PONDERING_ENABLED = _env_bool('PONDERING_ENABLED', True)
 
 # -------- DIAGNOSTIC CONTROL --------
 # Set IS_DIAGNOSTIC = True for development/debugging builds
 # Or enable via UCI "debug on" command
-IS_DIAGNOSTIC = _env_bool('IS_DIAGNOSTIC', False)  # Master switch for diagnostic output
+DIAGNOSTIC = _env_bool('DIAGNOSTIC', False)  # Master switch for diagnostic output
 debug_mode = _env_bool('DEBUG_MODE', False)  # Runtime toggle via UCI "debug on/off"
 
 # Multiprocessing configuration
 MAX_THREADS = _env_int('MAX_THREADS', 2)  # 1 or less disables multiprocessing, UCI option "Threads"
-IS_MULTI_CORE_BLAS = _env_bool('IS_MULTI_CORE_BLAS', False)
-IS_NN_ENABLED = _env_bool('IS_NN_ENABLED', True)
+MULTI_CORE_BLAS = _env_bool('MULTI_CORE_BLAS', False)
+NN_ENABLED = _env_bool('NN_ENABLED', True)
 NN_TYPE = _env_str('NN_TYPE', "NNUE")
 L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "NONE")  # Options: "NONE" (FP32), "INT8", "INT16"
 FULL_NN_EVAL_FREQ = _env_int('FULL_NN_EVAL_FREQ', 3000)  # Increase to 50_000 after initial testing

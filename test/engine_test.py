@@ -5,7 +5,6 @@ from contextlib import redirect_stdout
 
 import chess
 
-import lazy_smp
 from config import print_overridden_config
 from chess_engine import find_best_move, TimeControl, MAX_THREADS
 
@@ -441,7 +440,7 @@ def run_engine_tests(test_suite, is_mp=False):
     print(f"time_limit={test_suite[3]}")
 
     if is_mp:
-        mp_search.set_mp_cores(MAX_THREADS)
+        mp_search.set_lazy_smp_threads(MAX_THREADS)
 
     for line in re.split(test_suite[1], test_suite[0])[:test_suite[2]]:
         tests_total += 1

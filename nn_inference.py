@@ -13,6 +13,8 @@ Optimizations:
 import sys
 from typing import List, Tuple, Set, Dict, Optional
 import chess
+
+import config
 from cached_board import CachedBoard
 import numpy as np
 import torch
@@ -766,14 +768,14 @@ class NNUEInference:
         self._max_feature_idx = self.ft_weight.shape[1]
 
         # L1 Quantization setup
-        self._quantization_mode = L1_QUANTIZATION
+        self._quantization_mode = config.L1_QUANTIZATION
         self._l1_weight_q = None
         self._l1_combined_scale = None
         self._hidden_buf_q = None
 
-        if L1_QUANTIZATION == "INT8":
+        if config.L1_QUANTIZATION == "INT8":
             self._setup_int8_quantization()
-        elif L1_QUANTIZATION == "INT16":
+        elif config.L1_QUANTIZATION == "INT16":
             self._setup_int16_quantization()
 
     def _setup_int8_quantization(self):

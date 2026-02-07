@@ -6,14 +6,15 @@ from pathlib import Path
 import chess
 import chess.polyglot
 
-import chess_engine
-from config import IS_PONDERING_ENABLED
+import config
+from config import PONDERING_ENABLED
 from chess_engine import (find_best_move, MAX_NEGAMAX_DEPTH, TimeControl, dnn_eval_cache,
                           clear_game_history, game_position_history, HOME_DIR, kpi,
                           diag_summary, set_debug_mode,
                           is_debug_enabled, diag_print)
 from book_move import init_opening_book, get_book_move
 import lazy_smp
+from test.uci_config_bridge import register_config_tunables
 
 # Resign settings
 RESIGN_THRESHOLD = -500  # centipawns
@@ -40,6 +41,121 @@ ponder_time_info = None  # Dict with wtime, btime, winc, binc, movestogo
 ponder_start_time = None  # Time when ponder search started
 ponder_best_move = None  # Best move found during pondering
 ponder_best_score = None  # Score of best move during pondering
+
+"""
+uci_options.py
+
+Central registry for all UCI-exposed engine parameters.
+This allows clean parameter tuning via cutechess/self-play.
+
+Design goals:
+- Single source of truth for tunable parameters
+- No env vars
+- No hard-coded setoption spaghetti
+- Safe for self-play (per-engine instance)
+"""
+
+from typing import Callable, Dict, Any
+
+
+class UCIOption:
+    def __init__(
+        self,
+        name: str,
+        opt_type: str,
+        default: Any,
+        min_val: Any = None,
+        max_val: Any = None,
+        apply: Callable[[Any], None] = None,
+    ):
+        self.name = name
+        self.type = opt_type  # "spin", "check", "string"
+        self.default = default
+        self.min = min_val
+        self.max = max_val
+        self.apply = apply
+
+    def uci_declaration(self) -> str:
+        if self.type == "spin":
+            return (
+                f"option name {self.name} type spin "
+                f"default {self.default} min {self.min} max {self.max}"
+            )
+        elif self.type == "check":
+            default = "true" if self.default else "false"
+            return f"option name {self.name} type check default {default}"
+        elif self.type == "string":
+            return f"option name {self.name} type string default {self.default}"
+        else:
+            raise ValueError(f"Unknown UCI option type: {self.type}")
+
+    def parse_value(self, value: str):
+        if self.type == "spin":
+            return int(value)
+        elif self.type == "check":
+            return value.lower() == "true"
+        elif self.type == "string":
+            return value
+        else:
+            return value
+
+
+UCI_TUNABLES: Dict[str, UCIOption] = {}
+
+  #  "MULTI_CORE_BLAS": UCIOption(
+   #     name="MULTI_CORE_BLAS",
+  #      opt_type="check",
+   #     default=False,
+   #     apply=set_multi_core_blas,
+   # ),
+    #"MULTI_CORE_BLAS": UCIOption(
+    #    name="MULTI_CORE_BLAS",
+    #    opt_type="spin",
+    #    default=False,
+    #    min_val=1,
+    #    max_val=6,
+    #    apply=set_multi_core_blas,
+    #),
+    #"MAX_QS_MOVES": UCIOption(
+    #   name="MAX_QS_MOVES",
+    #   opt_type="string",
+    #   default="[12,6,4,2]",
+    #   apply=chess_engine.set_max_qs_moves,
+    #),
+#}
+
+register_config_tunables(UCI_TUNABLES, UCIOption)
+
+def print_uci_options():
+    for opt in UCI_TUNABLES.values():
+        print(opt.uci_declaration(), flush=True)
+
+
+# MULTI_CORE_BLAS Needs special handling
+def set_multi_core_blas(multi_core_blas: bool) -> None:
+    if not multi_core_blas:
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+        os.environ["OMP_NUM_THREADS"] = "1"
+    else:
+        del os.environ['OPENBLAS_NUM_THREADS']
+        del os.environ['MKL_NUM_THREADS']
+        del os.environ['OMP_NUM_THREADS']
+
+
+def apply_uci_option(name: str, value: str) -> bool:
+    opt = UCI_TUNABLES.get(name)
+    if not opt:
+        return False
+
+    parsed_value = opt.parse_value(value)
+    if opt.apply:
+        opt.apply(parsed_value)
+
+    if name == "MULTI_CORE_BLAS":
+        set_multi_core_blas(parsed_value)
+
+    return True
 
 
 def record_position_hash(board: chess.Board):
@@ -72,7 +188,10 @@ def uci_loop():
             print(f"option name ResignThreshold type spin default {RESIGN_THRESHOLD} min -10000 max 0")
             print(f"option name ResignMoves type spin default {RESIGN_CONSECUTIVE_MOVES} min 1 max 10")
             print("option name Ponder type check default true")
-            print(f"option name Threads type spin default {chess_engine.MAX_THREADS} min 1 max 64")
+            print(f"option name Threads type spin default {config.MAX_THREADS} min 1 max 64")
+
+            print_uci_options()
+
             print("uciok", flush=True)
 
         elif command == "isready":
@@ -109,7 +228,10 @@ def uci_loop():
                     use_ponder = value.lower() == "true"
                 elif name.lower() == "threads":
                     cores = int(value)
-                    lazy_smp.set_mp_cores(cores)
+                    lazy_smp.set_lazy_smp_threads(cores)
+                else:
+                    if apply_uci_option(name, value):
+                        diag_print(f"Applied tunable option {name}={value}")
 
         elif command == "ucinewgame":
             # Print diagnostic summary from previous game (if any issues) when debug enabled
@@ -176,7 +298,7 @@ def uci_loop():
             go_ponder = "ponder" in tokens
 
             # If pondering is disabled or this is a ponder command but pondering not supported
-            if go_ponder and (not IS_PONDERING_ENABLED or not use_ponder):
+            if go_ponder and (not PONDERING_ENABLED or not use_ponder):
                 # Ignore ponder request, just wait
                 continue
 
