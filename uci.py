@@ -7,13 +7,14 @@ import chess
 import chess.polyglot
 
 import config
-from chess_engine import (find_best_move, MAX_NEGAMAX_DEPTH, TimeControl, dnn_eval_cache,
-                          clear_game_history, game_position_history, HOME_DIR, kpi,
+from chess_engine import (find_best_move, TimeControl, dnn_eval_cache,
+                          clear_game_history, game_position_history, kpi,
                           diag_summary, set_debug_mode,
                           is_debug_enabled, diag_print, return_nn_evaluator_to_pool)
 from book_move import init_opening_book, get_book_move
 import lazy_smp
-from test.uci_config_bridge import register_config_tunables
+from test.uci_config_bridge import register_config_tunables, print_uci_options, \
+    apply_uci_option
 
 # Resign settings
 RESIGN_THRESHOLD = -500  # centipawns
@@ -23,8 +24,8 @@ resign_counter = 0
 # Pondering settings
 PONDER_TIME_LIMIT = 600  # Maximum time for ponder search (safety cap)
 
-CURR_DIR = Path(__file__).resolve().parent
-DEFAULT_BOOK_PATH = CURR_DIR / f"../{HOME_DIR}" / 'book' / 'komodo.bin'
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_BOOK_PATH = SCRIPT_DIR / f"../{SCRIPT_DIR}" / 'book' / 'komodo.bin'
 
 search_thread = None
 use_book = True
@@ -52,87 +53,6 @@ Design goals:
 - No hard-coded setoption spaghetti
 - Safe for self-play (per-engine instance)
 """
-
-from typing import Callable, Dict, Any
-
-
-class UCIOption:
-    def __init__(
-        self,
-        name: str,
-        opt_type: str,
-        default: Any,
-        min_val: Any = None,
-        max_val: Any = None,
-        apply: Callable[[Any], None] = None,
-    ):
-        self.name = name
-        self.type = opt_type  # "spin", "check", "string"
-        self.default = default
-        self.min = min_val
-        self.max = max_val
-        self.apply = apply
-
-    def uci_declaration(self) -> str:
-        if self.type == "spin":
-            return (
-                f"option name {self.name} type spin "
-                f"default {self.default} min {self.min} max {self.max}"
-            )
-        elif self.type == "check":
-            default = "true" if self.default else "false"
-            return f"option name {self.name} type check default {default}"
-        elif self.type == "string":
-            return f"option name {self.name} type string default {self.default}"
-        else:
-            raise ValueError(f"Unknown UCI option type: {self.type}")
-
-    def parse_value(self, value: str):
-        if self.type == "spin":
-            return int(value)
-        elif self.type == "check":
-            return value.lower() == "true"
-        elif self.type == "string":
-            return value
-        else:
-            return value
-
-
-UCI_TUNABLES: Dict[str, UCIOption] = {}
-
-register_config_tunables(UCI_TUNABLES, UCIOption)
-
-def print_uci_options():
-    for opt in UCI_TUNABLES.values():
-        print(opt.uci_declaration(), flush=True)
-
-
-# MULTI_CORE_BLAS Needs special handling
-def set_multi_core_blas(multi_core_blas: bool) -> None:
-    if not multi_core_blas:
-        os.environ["OPENBLAS_NUM_THREADS"] = "1"
-        os.environ["MKL_NUM_THREADS"] = "1"
-        os.environ["OMP_NUM_THREADS"] = "1"
-    else:
-        del os.environ['OPENBLAS_NUM_THREADS']
-        del os.environ['MKL_NUM_THREADS']
-        del os.environ['OMP_NUM_THREADS']
-
-
-def apply_uci_option(name: str, value: str) -> bool:
-    opt = UCI_TUNABLES.get(name)
-    if not opt:
-        return False
-
-    parsed_value = opt.parse_value(value)
-    if opt.apply:
-        opt.apply(parsed_value)
-
-    if name == "MULTI_CORE_BLAS":
-        set_multi_core_blas(parsed_value)
-
-    return True
-
 
 def record_position_hash(board: chess.Board):
     """Record position in game history using Zobrist hash."""
@@ -270,7 +190,7 @@ def uci_loop():
         elif command.startswith("go"):
             tokens = command.split()
             movetime = None
-            max_depth = MAX_NEGAMAX_DEPTH
+            max_depth = config.MAX_NEGAMAX_DEPTH
             go_ponder = "ponder" in tokens
 
             # If pondering is disabled or this is a ponder command but pondering not supported
@@ -571,23 +491,24 @@ def uci_loop():
                     TimeControl.stop_search = True
                     lazy_smp.stop_parallel_search()
                 else:
+                    # Discount ponderhit time to absorb MIN_PREFERRED_DEPTH overshoot.
+                    # The search clears soft_stop to force depth 5, overshooting by 30-50%.
+                    # Reducing the budget ensures hard_stop lands near the intended allocation.
+                    ponderhit_raw = ponderhit_time_limit
+                    ponderhit_time_limit = max(0.1, ponderhit_time_limit * 0.70)
+                    diag_print(f"ponderhit adjusted: {ponderhit_raw:.2f}s -> {ponderhit_time_limit:.2f}s")
+
                     # Update TimeControl with real time — the running search picks this up.
                     # Order matters to avoid race with check_time():
-                    # 1. Clear soft_stop first
-                    # 2. Set start_time (so elapsed is correct)
-                    # 3. Set time_limit (enables check_time)
-                    # 4. Set hard_stop_time
                     TimeControl.soft_stop = False
                     TimeControl.start_time = time.perf_counter()
                     TimeControl.time_limit = ponderhit_time_limit
-                    grace_period = max(ponderhit_time_limit * 0.5, 0.3)
+                    # Tighter grace for ponderhit (20% vs 50% for normal search)
+                    # because TT is warm and we already have a deep result from ponder
+                    grace_period = max(ponderhit_time_limit * 0.20, 0.15)
                     TimeControl.hard_stop_time = TimeControl.start_time + ponderhit_time_limit + grace_period
                     TimeControl.is_ponder_search = False
 
-                    # Signal search thread that we're no longer pondering.
-                    # If it's in the wait loop, it exits and outputs bestmove.
-                    # If it's still searching, it continues with the new time limit
-                    # and outputs bestmove when done.
                     is_pondering = False
                     diag_print(f"ponderhit: TimeControl updated, search continues")
 
@@ -647,4 +568,5 @@ if __name__ == "__main__":
     else:
         print(f"info string Book not found: {DEFAULT_BOOK_PATH}", flush=True)
 
+    register_config_tunables()
     uci_loop()

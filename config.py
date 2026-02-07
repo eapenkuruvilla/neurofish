@@ -56,7 +56,7 @@ debug_mode = _env_bool('DEBUG_MODE', False)  # Runtime toggle via UCI "debug on/
 
 # Multiprocessing configuration
 MAX_THREADS = _env_int('MAX_THREADS', 1)  # 1 or less disables multiprocessing, UCI option "Threads"
-MULTI_CORE_BLAS = _env_bool('MULTI_CORE_BLAS', False)
+MULTI_THREAD_BLAS = _env_bool('MULTI_THREAD_BLAS', False)
 NN_ENABLED = _env_bool('NN_ENABLED', True)
 NN_TYPE = _env_str('NN_TYPE', "NNUE")
 L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "NONE")  # Options: "NONE" (FP32), "INT8", "INT16"

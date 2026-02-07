@@ -1,5 +1,7 @@
 import heapq
+import os
 import re
+import sys
 import time
 import traceback
 import threading
@@ -10,37 +12,26 @@ import chess
 import chess.polyglot
 import numpy as np
 
+import config
 from cached_board import CachedBoard, move_to_int, int_to_move
-from config import *
-from config import MAX_SCORE, QS_SOFT_STOP_DIVISOR
 from nn_evaluator import DNNEvaluator, NNUEEvaluator, NNEvaluator
 
-CURR_DIR = Path(__file__).resolve().parent
+SCRIPT_DIR = Path(__file__).resolve().parent
 HOME_DIR = "neurofish"
-DNN_MODEL_FILEPATH = CURR_DIR / f"../{HOME_DIR}" / 'model' / 'dnn.pt'
-NNUE_MODEL_FILEPATH = CURR_DIR / f"../{HOME_DIR}" / 'model' / 'nnue.pt'
+DNN_MODEL_FILEPATH = SCRIPT_DIR / f"../{HOME_DIR}" / 'model' / 'dnn.pt'
+NNUE_MODEL_FILEPATH = SCRIPT_DIR / f"../{HOME_DIR}" / 'model' / 'nnue.pt'
 
-if not MULTI_CORE_BLAS:
-    os.environ["OPENBLAS_NUM_THREADS"] = "1"
-    os.environ["MKL_NUM_THREADS"] = "1"
-    os.environ["OMP_NUM_THREADS"] = "1"
-else:
-    del os.environ['OPENBLAS_NUM_THREADS']
-    del os.environ['MKL_NUM_THREADS']
-    del os.environ['OMP_NUM_THREADS']
 
-MODEL_PATH = str(DNN_MODEL_FILEPATH if NN_TYPE == "DNN" else NNUE_MODEL_FILEPATH)
-
+MODEL_PATH = str(DNN_MODEL_FILEPATH if config.NN_TYPE == "DNN" else NNUE_MODEL_FILEPATH)
 
 def is_debug_enabled() -> bool:
     """Check if diagnostic output is enabled (either via IS_DIAGNOSTIC or UCI debug on)."""
-    return DIAGNOSTIC or debug_mode
+    return config.DIAGNOSTIC or config.debug_mode
 
 
 def set_debug_mode(enabled: bool):
     """Set debug mode from UCI command."""
-    global debug_mode
-    debug_mode = enabled
+    config.debug_mode = enabled
 
 
 class TimeControl:
@@ -58,8 +49,8 @@ TT_EXACT, TT_LOWER_BOUND, TT_UPPER_BOUND = 0, 1, 2
 transposition_table = {}
 qs_transposition_table = {}
 dnn_eval_cache = {}
-killer_moves = [[None, None] for _ in range(MAX_NEGAMAX_DEPTH + 1)]  # Legacy - kept for compatibility
-killer_moves_int = [[0, 0] for _ in range(MAX_NEGAMAX_DEPTH + 1)]  # Primary: Integer-based killer moves
+killer_moves = [[None, None] for _ in range(config.MAX_NEGAMAX_DEPTH + 1)]  # Legacy - kept for compatibility
+killer_moves_int = [[0, 0] for _ in range(config.MAX_NEGAMAX_DEPTH + 1)]  # Primary: Integer-based killer moves
 
 # Array-based history heuristic for O(1) access
 # Max move_int is from_sq(63) | to_sq(63)<<6 | promo(5)<<12 = 63 + 63*64 + 5*4096 = 24575
@@ -166,6 +157,19 @@ def diag_print(msg: str):
     if is_debug_enabled():
         print(f"info string {msg}", flush=True)
 
+def configure_multi_thread_blas() -> None:
+    if not config.MULTI_THREAD_BLAS:
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+        os.environ["OMP_NUM_THREADS"] = "1"
+        print("✓ Disabling multi-threaded BLAS", file=sys.stderr)
+    else:
+        del os.environ['OPENBLAS_NUM_THREADS']
+        del os.environ['MKL_NUM_THREADS']
+        del os.environ['OMP_NUM_THREADS']
+        print("✓ Allowing multi-threaded BLAS", file=sys.stderr)
+
+configure_multi_thread_blas()
 
 # Track positions seen in the current game (cleared on ucinewgame)
 game_position_history: dict[int, int] = {}  # zobrist_hash -> count
@@ -179,11 +183,16 @@ _nn_eval_pool: list = []  # Pool of idle NNEvaluator instances
 _nn_eval_pool_lock = threading.Lock()
 
 # Main thread's nn_evaluator (also serves as template for creating thread-local copies)
-if NN_TYPE == "DNN":
-    nn_evaluator = DNNEvaluator.create(CachedBoard(), NN_TYPE, MODEL_PATH)  # Loads model
-else:
-    nn_evaluator = NNUEEvaluator.create(CachedBoard(), NN_TYPE, MODEL_PATH)
+nn_evaluator: None | NNEvaluator = None
 
+def configure_nn_type():
+    global nn_evaluator
+    if config.NN_TYPE == "DNN":
+        nn_evaluator = DNNEvaluator.create(CachedBoard(), config.NN_TYPE, MODEL_PATH)  # Loads model
+    else:
+        nn_evaluator = NNUEEvaluator.create(CachedBoard(), config.NN_TYPE, MODEL_PATH)
+
+configure_nn_type()
 
 def get_nn_evaluator() -> NNEvaluator:
     """
@@ -213,7 +222,7 @@ def get_nn_evaluator() -> NNEvaluator:
             # Create a new evaluator instance for this thread using the factory method
             thread_name = threading.current_thread().name
             diag_print(f"Creating thread-local nn_evaluator for {thread_name}")
-            _thread_local.nn_evaluator = NNEvaluator.create(CachedBoard(), NN_TYPE, MODEL_PATH)
+            _thread_local.nn_evaluator = NNEvaluator.create(CachedBoard(), config.NN_TYPE, MODEL_PATH)
 
     return _thread_local.nn_evaluator
 
@@ -331,7 +340,7 @@ def evaluate_classical(board: CachedBoard, skip_game_over: bool = False) -> int:
     if not skip_game_over and board.is_game_over():
         if board.is_checkmate():
             # Side to move is checkmated - worst possible score
-            return -MAX_SCORE + board.ply()
+            return -config.MAX_SCORE + board.ply()
         else:
             return 0  # Stalemate or other draw
 
@@ -348,7 +357,7 @@ def evaluate_nn(board: CachedBoard, skip_game_over: bool = False) -> int:
     if not skip_game_over and board.is_game_over():
         if board.is_checkmate():
             # Side to move is checkmated - worst possible score
-            return -MAX_SCORE + board.ply()
+            return -config.MAX_SCORE + board.ply()
         else:
             return 0  # Stalemate or other draw
 
@@ -366,7 +375,7 @@ def evaluate_nn(board: CachedBoard, skip_game_over: bool = False) -> int:
     dnn_eval_cache[key] = score
 
     # Occasionally do a full evaluation to rule out any drift errors.
-    if kpi['nn_evals'] % FULL_NN_EVAL_FREQ == 0:
+    if kpi['nn_evals'] % config.FULL_NN_EVAL_FREQ == 0:
         full_score = evaluator.evaluate_full_centipawns(board)
         if abs(full_score - score) > 10:
             _diag_warn("eval_drift", f"Incr={score} vs Full={full_score}, diff={abs(full_score - score)}")
@@ -527,7 +536,7 @@ def ordered_moves_q_search_int(board: CachedBoard, last_capture_sq: int = -1) ->
 
     # OPTIMIZED: Only get top moves instead of sorting all
     # Use MAX_QS_MOVES[0] (=12) as upper bound - actual limit applied in quiescence()
-    top_moves = heapq.nlargest(MAX_QS_MOVES[0], moves_with_scores)
+    top_moves = heapq.nlargest(config.MAX_QS_MOVES[0], moves_with_scores)
     return [m for _, m in top_moves]
 
 
@@ -608,7 +617,7 @@ def should_stop_search(current_depth: int) -> bool:
     """
     if TimeControl.stop_search:
         return True
-    if TimeControl.soft_stop and current_depth > MIN_NEGAMAX_DEPTH:
+    if TimeControl.soft_stop and current_depth > config.MIN_NEGAMAX_DEPTH:
         return True
     return False
 
@@ -643,15 +652,15 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
     _qs_stats["max_depth_reached"] = max(_qs_stats["max_depth_reached"], q_depth)
 
     # -------- AGGRESSIVE: Check time every QS_TIME_CHECK_INTERVAL nodes --------
-    if _qs_stats["total_nodes"] % QS_TIME_CHECK_INTERVAL == 0:
+    if _qs_stats["total_nodes"] % config.QS_TIME_CHECK_INTERVAL == 0:
         check_time()
         # NEW: Also check QS time budget
         if TimeControl.time_limit and TimeControl.start_time:
             elapsed = time.perf_counter() - TimeControl.start_time
-            if elapsed > TimeControl.time_limit * QS_TIME_BUDGET_FRACTION:
+            if elapsed > TimeControl.time_limit * config.QS_TIME_BUDGET_FRACTION:
                 TimeControl.soft_stop = True
                 _diag_warn("qs_budget_exceeded",
-                           f"QS exceeded {QS_TIME_BUDGET_FRACTION * 100:.0f}% time budget at depth {q_depth}")
+                           f"QS exceeded {config.QS_TIME_BUDGET_FRACTION * 100:.0f}% time budget at depth {q_depth}")
 
     # FIX V3: Always check time at QS entry when time is short
     if TimeControl.time_limit and TimeControl.time_limit < 1.0:
@@ -660,7 +669,7 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
     # Hard stop always honored immediately
     if TimeControl.stop_search:
         # Skip game_over check - we got here via legal move
-        if NN_ENABLED and q_depth <= QS_DEPTH_MAX_NN_EVAL:
+        if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL:
             return evaluate_nn(board, skip_game_over=True), []
         else:
             return evaluate_classical(board, skip_game_over=True), []
@@ -669,24 +678,24 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
     # FIX: Don't soft-stop if we're in a capture sequence (last move was a capture)
     # This prevents horizon effect where we stop right before an obvious recapture
     in_capture_sequence = (last_capture_sq >= 0)
-    if TimeControl.soft_stop and q_depth > round(MAX_QS_DEPTH // QS_SOFT_STOP_DIVISOR):
+    if TimeControl.soft_stop and q_depth > round(config.MAX_QS_DEPTH // config.QS_SOFT_STOP_DIVISOR):
         if not in_capture_sequence:
             _qs_stats["time_cutoffs"] += 1
             _diag_warn("qs_time_cutoff", f"QS soft-stopped at depth {q_depth}")
             # Skip game_over check - we got here via legal move
-            if NN_ENABLED and q_depth <= QS_DEPTH_MAX_NN_EVAL:
+            if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL:
                 return evaluate_nn(board, skip_game_over=True), []
             else:
                 return evaluate_classical(board, skip_game_over=True), []
         # If in capture sequence, continue but with tighter limits (handled below)
 
     # -------- Hard depth limit to prevent search explosion --------
-    if q_depth > MAX_QS_DEPTH:
+    if q_depth > config.MAX_QS_DEPTH:
         # DIAG: Track QS depth limit hits
         _diag_warn("qs_depth_exceeded", f"QS hit depth {q_depth}, fen={board.fen()[:40]}")
         # Return static evaluation when QS goes too deep
         # Skip game_over check - we got here via legal move
-        if NN_ENABLED and q_depth <= QS_DEPTH_MAX_NN_EVAL:
+        if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL:
             return evaluate_nn(board, skip_game_over=True), []
         else:
             return evaluate_classical(board, skip_game_over=True), []
@@ -698,7 +707,7 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
     # -------- Always compute key for TT --------
     key = board.zobrist_hash()
 
-    if QS_TT_SUPPORTED and key in qs_transposition_table:
+    if config.QS_TT_SUPPORTED and key in qs_transposition_table:
         kpi['qs_tt_hits'] += 1
         stored_score = qs_transposition_table[key]
         if stored_score >= beta:
@@ -708,22 +717,22 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
     # We check it at the end if moves_searched == 0 and not in check
     is_check = board.is_check()
     best_pv = []
-    best_score = -MAX_SCORE  # ✅ Track best score separately
+    best_score = -config.MAX_SCORE  # ✅ Track best score separately
 
     # Stand-pat is not valid when in check. It is likely that there will be a move that is better
     # than stand-pat
     if not is_check:
         is_dnn_eval = False
-        if NN_ENABLED and q_depth <= QS_DEPTH_MIN_NN_EVAL:
+        if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MIN_NN_EVAL:
             stand_pat = evaluate_nn(board)
             is_dnn_eval = True
         else:
             stand_pat = evaluate_classical(board)
 
         # if classical evaluation of stand_pat is close to beta, use NN evaluation.
-        if (not is_dnn_eval and NN_ENABLED and q_depth <= QS_DEPTH_MAX_NN_EVAL
-                and abs(stand_pat) < STAND_PAT_MAX_NN_EVAL
-                and abs(stand_pat - beta) < QS_DELTA_MAX_NN_EVAL):
+        if (not is_dnn_eval and config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL
+                and abs(stand_pat) < config.STAND_PAT_MAX_NN_EVAL
+                and abs(stand_pat - beta) < config.QS_DELTA_MAX_NN_EVAL):
             stand_pat = evaluate_nn(board)
             is_dnn_eval = True
 
@@ -736,10 +745,10 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
             return stand_pat, []  # ✅ Return stand_pat (it's the best we can do)
 
         # If stand_pat is going to be alpha or stan_pat and alpha are close, use NN evaluation.
-        if (not is_dnn_eval and NN_ENABLED
-                and q_depth <= QS_DEPTH_MAX_NN_EVAL
-                and abs(stand_pat) < STAND_PAT_MAX_NN_EVAL
-                and (stand_pat > alpha or abs(stand_pat - alpha) < QS_DELTA_MAX_NN_EVAL)):
+        if (not is_dnn_eval and config.NN_ENABLED
+                and q_depth <= config.QS_DEPTH_MAX_NN_EVAL
+                and abs(stand_pat) < config.STAND_PAT_MAX_NN_EVAL
+                and (stand_pat > alpha or abs(stand_pat - alpha) < config.QS_DELTA_MAX_NN_EVAL)):
             stand_pat = evaluate_nn(board)
 
         best_score = stand_pat  # ✅ Initialize best_score with stand_pat
@@ -748,19 +757,19 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
 
     # -------- DYNAMIC move limit based on depth AND time pressure --------
     move_limit = None
-    for i in range(len(MAX_QS_MOVES_DIVISOR)):
-        if q_depth <= round(MAX_QS_DEPTH / MAX_QS_MOVES_DIVISOR[i]):
-            move_limit = MAX_QS_MOVES[i]
+    for i in range(len(config.MAX_QS_MOVES_DIVISOR)):
+        if q_depth <= round(config.MAX_QS_DEPTH / config.MAX_QS_MOVES_DIVISOR[i]):
+            move_limit = config.MAX_QS_MOVES[i]
             break
     if move_limit is None:
-        move_limit = MAX_QS_MOVES[-1]
+        move_limit = config.MAX_QS_MOVES[-1]
 
     time_critical = TimeControl.soft_stop or (
             TimeControl.time_limit and TimeControl.start_time and
-            (time.perf_counter() - TimeControl.start_time) > TimeControl.time_limit * QS_TIME_CRITICAL_FACTOR
+            (time.perf_counter() - TimeControl.start_time) > TimeControl.time_limit * config.QS_TIME_CRITICAL_FACTOR
     )
     if time_critical:
-        move_limit = min(MAX_QS_MOVES_TIME_CRITICAL, move_limit)  # Time critical (5 moves)
+        move_limit = min(config.MAX_QS_MOVES_TIME_CRITICAL, move_limit)  # Time critical (5 moves)
 
     # Pre-compute move info for this position (using integer version)
     board.precompute_move_info_int()
@@ -787,18 +796,18 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
             # if the move is not a capture then if the move gives check and depth < TACTICAL_QS_MAX_DEPTH,
             # go ahead with exploration; otherwise skip the move
             if not is_capture_move:
-                if q_depth > CHECK_QS_MAX_DEPTH:
+                if q_depth > config.CHECK_QS_MAX_DEPTH:
                     continue
                 if not board.gives_check_int(move_int):
                     continue
 
             # -------- Delta pruning (only when not in check) --------
-            if (q_depth >= DELTA_PRUNING_QS_MIN_DEPTH and is_capture_move
+            if (q_depth >= config.DELTA_PRUNING_QS_MIN_DEPTH and is_capture_move
                     and not board.gives_check_int(move_int)):
                 victim_type = board.get_victim_type_int(move_int)
                 if victim_type:
                     gain = PIECE_VALUES[victim_type]
-                    if best_score + gain + DELTA_PRUNING_QS_MARGIN < alpha:  # ✅ Use best_score
+                    if best_score + gain + config.DELTA_PRUNING_QS_MARGIN < alpha:  # ✅ Use best_score
                         continue
 
         # Compute is_capture_move if not already done (when in_check is True)
@@ -807,7 +816,7 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
 
         # Convert to chess.Move for push (needed by evaluator)
         move = int_to_move(move_int)
-        should_update_nn = q_depth <= QS_DEPTH_MAX_NN_EVAL
+        should_update_nn = q_depth <= config.QS_DEPTH_MAX_NN_EVAL
         if should_update_nn:
             push_move(board, move, get_nn_evaluator())
         else:
@@ -835,7 +844,7 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
             if TimeControl.stop_search:
                 break  # Exit loop gracefully, return best_score below
             # Also check soft_stop in deep QS - but not if we're still in capture sequence
-            if TimeControl.soft_stop and q_depth > round(MAX_QS_DEPTH // QS_SOFT_STOP_DIVISOR):
+            if TimeControl.soft_stop and q_depth > round(config.MAX_QS_DEPTH // config.QS_SOFT_STOP_DIVISOR):
                 if not in_capture_sequence:
                     _qs_stats["time_cutoffs"] += 1
                     break
@@ -846,7 +855,7 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
 
         if score >= beta:
             kpi['beta_cutoffs'] += 1
-            if QS_TT_SUPPORTED:
+            if config.QS_TT_SUPPORTED:
                 qs_transposition_table[key] = score
             return score, best_pv  # ✅ Return score, not beta
 
@@ -856,13 +865,13 @@ def quiescence(board: CachedBoard, alpha: int, beta: int, q_depth: int,
     # -------- No moves searched = check for checkmate/stalemate --------
     if moves_searched == 0:
         if is_check:
-            return -MAX_SCORE + board.ply(), []  # Checkmate
+            return -config.MAX_SCORE + board.ply(), []  # Checkmate
         # Deferred stalemate check - only when not in check and no moves
         # This is rare, so we save the is_game_over call for most nodes
         if board.is_game_over():
             return 0, []  # Stalemate
 
-    if QS_TT_SUPPORTED:
+    if config.QS_TT_SUPPORTED:
         qs_transposition_table[key] = best_score  # ✅ Store best_score
 
     return best_score, best_pv  # ✅ Return best_score, not alpha
@@ -916,7 +925,7 @@ def negamax(board: CachedBoard, depth: int, alpha: int, beta: int, allow_singula
 
     best_move_int = 0  # Integer move
     best_pv = []
-    max_eval = -MAX_SCORE
+    max_eval = -config.MAX_SCORE
 
     # -------- TT Lookup --------
     entry = transposition_table.get(key)
@@ -948,13 +957,13 @@ def negamax(board: CachedBoard, depth: int, alpha: int, beta: int, allow_singula
 
     # -------- Razoring (drop into quiescence when far below alpha) --------
     # At low depths, if we're way below alpha, just go to quiescence
-    if (RAZORING_ENABLED
+    if (config.RAZORING_ENABLED
             and not in_check
-            and depth <= RAZORING_MAX_DEPTH
+            and depth <= config.RAZORING_MAX_DEPTH
             and depth >= 1):
         # Get static eval (use material for speed)
         static_eval = evaluate_classical(board)
-        margin = RAZORING_MARGIN[depth] if depth < len(RAZORING_MARGIN) else RAZORING_MARGIN[-1]
+        margin = config.RAZORING_MARGIN[depth] if depth < len(config.RAZORING_MARGIN) else config.RAZORING_MARGIN[-1]
 
         if static_eval + margin <= alpha:
             # Position is so bad that even with a margin, we're below alpha
@@ -965,13 +974,13 @@ def negamax(board: CachedBoard, depth: int, alpha: int, beta: int, allow_singula
                 return qs_score, qs_pv
 
     # -------- Null Move Pruning (not when in check or in zugzwang-prone positions) --------
-    if (depth >= NULL_MOVE_MIN_DEPTH
+    if (depth >= config.NULL_MOVE_MIN_DEPTH
             and not in_check
             # and not on_expected_pv  # Don't null-move on PV
             and board.has_non_pawn_material()
             and board.occupied.bit_count() > 6):
         push_move(board, chess.Move.null(), get_nn_evaluator())
-        score, _ = negamax(board, depth - 1 - NULL_MOVE_REDUCTION, -beta, -beta + 1, allow_singular=False)
+        score, _ = negamax(board, depth - 1 - config.NULL_MOVE_REDUCTION, -beta, -beta + 1, allow_singular=False)
         score = -score
         board.pop()
         get_nn_evaluator().pop()
@@ -991,11 +1000,11 @@ def negamax(board: CachedBoard, depth: int, alpha: int, beta: int, allow_singula
             and transposition_table[key].depth >= depth - 3):
 
         reduced_depth = max(1, depth // 2 - 1)
-        reduced_beta = transposition_table[key].score - SINGULAR_MARGIN
+        reduced_beta = transposition_table[key].score - config.SINGULAR_MARGIN
 
         # Only search a few top moves, not all
         move_count = 0
-        highest_score = -MAX_SCORE
+        highest_score = -config.MAX_SCORE
 
         for move_int in ordered_moves_int(board, depth, tt_move_int=tt_move_int):
             if move_int == tt_move_int:
@@ -1023,20 +1032,20 @@ def negamax(board: CachedBoard, depth: int, alpha: int, beta: int, allow_singula
     moves_int = ordered_moves_int(board, depth, tt_move_int=tt_move_int)
     if not moves_int:
         if in_check:
-            return -MAX_SCORE + board.ply(), []
+            return -config.MAX_SCORE + board.ply(), []
         return 0, []
 
     # -------- Futility Pruning Setup --------
     # Compute static eval once for futility pruning (only needed at low depths)
     futility_pruning_applicable = False
     static_eval = None
-    if (FUTILITY_PRUNING_ENABLED
+    if (config.FUTILITY_PRUNING_ENABLED
             and not in_check
-            and depth <= FUTILITY_MAX_DEPTH
+            and depth <= config.FUTILITY_MAX_DEPTH
             and depth >= 1
-            and abs(alpha) < MAX_SCORE - 100):  # Not near mate scores
+            and abs(alpha) < config.MAX_SCORE - 100):  # Not near mate scores
         static_eval = evaluate_classical(board)
-        futility_margin = FUTILITY_MARGIN[depth] if depth < len(FUTILITY_MARGIN) else FUTILITY_MARGIN[-1]
+        futility_margin = config.FUTILITY_MARGIN[depth] if depth < len(config.FUTILITY_MARGIN) else config.FUTILITY_MARGIN[-1]
         # If static eval + margin is still below alpha, futility pruning may apply
         if static_eval + futility_margin <= alpha:
             futility_pruning_applicable = True
@@ -1053,8 +1062,8 @@ def negamax(board: CachedBoard, depth: int, alpha: int, beta: int, allow_singula
         gives_check = board.gives_check_int(move_int)
 
         # -------- SEE Pruning (prune losing captures at low depths) --------
-        if (SEE_PRUNING_ENABLED
-                and depth <= SEE_PRUNING_MAX_DEPTH
+        if (config.SEE_PRUNING_ENABLED
+                and depth <= config.SEE_PRUNING_MAX_DEPTH
                 and is_capture
                 and not in_check
                 and move_int != tt_move_int
@@ -1090,7 +1099,7 @@ def negamax(board: CachedBoard, depth: int, alpha: int, beta: int, allow_singula
         # -------- Extensions --------
         extension = 0
         if singular_extension_applicable and move_int == singular_move_int:
-            extension = SINGULAR_EXTENSION
+            extension = config.SINGULAR_EXTENSION
         elif child_in_check:
             extension = 1
 
@@ -1106,8 +1115,8 @@ def negamax(board: CachedBoard, depth: int, alpha: int, beta: int, allow_singula
             km1_int = 0
 
         reduce = (
-                depth >= LMR_MIN_DEPTH
-                and move_index >= LMR_MOVE_THRESHOLD
+                depth >= config.LMR_MIN_DEPTH
+                and move_index >= config.LMR_MOVE_THRESHOLD
                 and not child_in_check
                 and not is_capture
                 and not gives_check
@@ -1340,7 +1349,7 @@ def pv_to_san(board: CachedBoard, pv: List[chess.Move]) -> str:
     return " ".join(san_moves)
 
 
-def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=True,
+def find_best_move(fen, max_depth=config.MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=True,
                    expected_best_moves=None, use_existing_time_control=False) -> \
         Tuple[Optional[chess.Move], int, List[chess.Move], int, float]:
     """
@@ -1408,7 +1417,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
     # -------- CRITICAL: NN cache trimming can be slow if cache is huge --------
     cache_size_before = len(dnn_eval_cache)
     cache_trim_start = time.perf_counter()
-    control_dict_size(dnn_eval_cache, MAX_TABLE_SIZE)
+    control_dict_size(dnn_eval_cache, config.MAX_TABLE_SIZE)
     cache_trim_time = time.perf_counter() - cache_trim_start
     cache_size_after = len(dnn_eval_cache)
 
@@ -1458,10 +1467,10 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
         if legal_moves:
             # Just evaluate all moves at depth 1 and pick best
             best_move = legal_moves[0]
-            best_score = -MAX_SCORE
+            best_score = -config.MAX_SCORE
             for move in legal_moves[:10]:  # Only look at first 10 moves
                 push_move(board, move, get_nn_evaluator())
-                score = -evaluate_nn(board) if NN_ENABLED else -evaluate_classical(board)
+                score = -evaluate_nn(board) if config.NN_ENABLED else -evaluate_classical(board)
                 board.pop()
                 get_nn_evaluator().pop()
                 if score > best_score:
@@ -1495,13 +1504,13 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
 
         # FIX V4: Determine minimum required depth based on position type and stability
         if score_unstable:
-            current_min_depth = UNSTABLE_MIN_DEPTH  # Highest minimum for unstable scores
-            if depth == UNSTABLE_MIN_DEPTH:
+            current_min_depth = config.UNSTABLE_MIN_DEPTH  # Highest minimum for unstable scores
+            if depth == config.UNSTABLE_MIN_DEPTH:
                 _diag["unstable_min_depth"] += 1
         elif is_tactical_position:
-            current_min_depth = TACTICAL_MIN_DEPTH  # Higher minimum for tactical
+            current_min_depth = config.TACTICAL_MIN_DEPTH  # Higher minimum for tactical
         else:
-            current_min_depth = MIN_PREFERRED_DEPTH  # Normal minimum
+            current_min_depth = config.MIN_PREFERRED_DEPTH  # Normal minimum
 
         # Check if we should stop (but respect minimum depths)
         if depth > current_min_depth and should_stop_search(depth):
@@ -1510,26 +1519,26 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
 
         # NEW: If we haven't reached minimum acceptable depth, clear soft_stop to force deeper search
         if depth <= current_min_depth and TimeControl.soft_stop and not TimeControl.stop_search:
-            if max_completed_depth > 0 and max_completed_depth < MIN_PREFERRED_DEPTH:
+            if max_completed_depth > 0 and max_completed_depth < config.MIN_PREFERRED_DEPTH:
                 TimeControl.soft_stop = False
                 _diag["min_depth_forced"] += 1
                 diag_print(
-                    f"MIN_DEPTH: Forcing depth {depth}, only completed {max_completed_depth}, need {MIN_PREFERRED_DEPTH}")
+                    f"MIN_DEPTH: Forcing depth {depth}, only completed {max_completed_depth}, need {config.MIN_PREFERRED_DEPTH}")
 
         # After MIN_DEPTH, check if we have enough time to likely complete the next depth
-        if depth > MIN_NEGAMAX_DEPTH and time_limit is not None and last_depth_time > 0:
+        if depth > config.MIN_NEGAMAX_DEPTH and time_limit is not None and last_depth_time > 0:
             elapsed = time.perf_counter() - TimeControl.start_time
             remaining = time_limit - elapsed
-            estimated_next_depth_time = last_depth_time * ESTIMATED_BRANCHING_FACTOR
+            estimated_next_depth_time = last_depth_time * config.ESTIMATED_BRANCHING_FACTOR
 
             # Only apply time estimation if we've reached minimum acceptable depth
-            if max_completed_depth >= MIN_PREFERRED_DEPTH:
-                if remaining < estimated_next_depth_time * TIME_SAFETY_MARGIN_RATIO:
+            if max_completed_depth >= config.MIN_PREFERRED_DEPTH:
+                if remaining < estimated_next_depth_time * config.TIME_SAFETY_MARGIN_RATIO:
                     # Not enough time to likely complete this depth
                     break
 
             # FIX V4: Emergency reserve - stop if we're eating into the reserve
-            if remaining < EMERGENCY_TIME_RESERVE and max_completed_depth >= MIN_PREFERRED_DEPTH:
+            if remaining < config.EMERGENCY_TIME_RESERVE and max_completed_depth >= config.MIN_PREFERRED_DEPTH:
                 _diag["emergency_reserve_stop"] += 1
                 diag_print(f"EMERGENCY_RESERVE: Only {remaining:.2f}s left, stopping at depth {max_completed_depth}")
                 break
@@ -1546,7 +1555,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                 tt_move_int = entry.best_move_int
 
         # -------- Aspiration window --------
-        window = ASPIRATION_WINDOW
+        window = config.ASPIRATION_WINDOW
         retries = 0
         depth_completed = False  # Track if this depth completed successfully
         search_aborted = False  # Track if search was aborted mid-depth
@@ -1561,14 +1570,14 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
         while not search_aborted:
             # First iteration or tactical positions use full window
             if use_full_window:
-                alpha = -MAX_SCORE
-                beta = MAX_SCORE
+                alpha = -config.MAX_SCORE
+                beta = config.MAX_SCORE
             else:
                 alpha = best_score - window
                 beta = best_score + window
             alpha_orig = alpha
 
-            current_best_score = -MAX_SCORE
+            current_best_score = -config.MAX_SCORE
             current_best_move_int = 0
             current_best_pv = []
 
@@ -1587,7 +1596,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                     search_aborted = True
                     break
                 # FIX: Only honor soft_stop mid-depth after reaching MIN_ACCEPTABLE_DEPTH
-                if TimeControl.soft_stop and max_completed_depth >= MIN_PREFERRED_DEPTH:
+                if TimeControl.soft_stop and max_completed_depth >= config.MIN_PREFERRED_DEPTH:
                     _diag_warn("mid_depth_abort",
                                f"Aborting depth {depth} mid-search (completed={max_completed_depth})")
                     search_aborted = True
@@ -1616,7 +1625,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
 
                 # Check if search was aborted during negamax
                 # FIX: Only honor soft_stop after reaching MIN_ACCEPTABLE_DEPTH
-                if TimeControl.stop_search or (TimeControl.soft_stop and max_completed_depth >= MIN_PREFERRED_DEPTH):
+                if TimeControl.stop_search or (TimeControl.soft_stop and max_completed_depth >= config.MIN_PREFERRED_DEPTH):
                     search_aborted = True
                     # Still save this move's result if it's our only one
                     if current_best_move_int == 0:
@@ -1658,7 +1667,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
             retries += 1
 
             # FIX V4: Use more retries for tactical positions
-            max_retries = MAX_AW_RETRIES_TACTICAL if is_tactical_position else MAX_AW_RETRIES
+            max_retries = config.MAX_AW_RETRIES_TACTICAL if is_tactical_position else config.MAX_AW_RETRIES
 
             # DIAG: Track excessive aspiration retries
             if retries >= max_retries:
@@ -1676,9 +1685,9 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
 
             # -------- FALLBACK: full window search --------
             if retries >= max_retries:
-                alpha = -MAX_SCORE
-                beta = MAX_SCORE
-                current_best_score = -MAX_SCORE
+                alpha = -config.MAX_SCORE
+                beta = config.MAX_SCORE
+                current_best_score = -config.MAX_SCORE
 
                 for move_int in ordered_moves_int(board, depth, pv_move_int, tt_move_int):
                     check_time()
@@ -1688,7 +1697,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                         search_aborted = True
                         break
                     # FIX: Only honor soft_stop after reaching MIN_ACCEPTABLE_DEPTH
-                    if TimeControl.soft_stop and max_completed_depth >= MIN_PREFERRED_DEPTH:
+                    if TimeControl.soft_stop and max_completed_depth >= config.MIN_PREFERRED_DEPTH:
                         search_aborted = True
                         break
 
@@ -1702,7 +1711,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                     # Check if search was aborted during negamax
                     # FIX: Only honor soft_stop after reaching MIN_ACCEPTABLE_DEPTH
                     if TimeControl.stop_search or (
-                            TimeControl.soft_stop and max_completed_depth >= MIN_PREFERRED_DEPTH):
+                            TimeControl.soft_stop and max_completed_depth >= config.MIN_PREFERRED_DEPTH):
                         search_aborted = True
                         if current_best_move_int == 0:
                             current_best_move_int = move_int
@@ -1753,7 +1762,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                         if TimeControl.soft_stop and not TimeControl.stop_search:
                             TimeControl.soft_stop = False
                             diag_print(
-                                f"TACTICAL_EXTENSION: Score swing {score_diff}cp at depth {depth}, forcing min depth {UNSTABLE_MIN_DEPTH}")
+                                f"TACTICAL_EXTENSION: Score swing {score_diff}cp at depth {depth}, forcing min depth {config.UNSTABLE_MIN_DEPTH}")
             prev_depth_score = best_score
 
         # Break out of depth loop if search was aborted
@@ -1791,7 +1800,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                    f"(tactical={is_tactical_position}, move={best_move_for_diag})")
 
     # Print QS statistics if significant
-    if _qs_stats["max_depth_reached"] > MAX_QS_DEPTH // 2 or _qs_stats["time_cutoffs"] > 0:
+    if _qs_stats["max_depth_reached"] > config.MAX_QS_DEPTH // 2 or _qs_stats["time_cutoffs"] > 0:
         diag_print(f"QS_STATS: max_depth={_qs_stats['max_depth_reached']}, "
                    f"nodes={_qs_stats['total_nodes']}, time_cutoffs={_qs_stats['time_cutoffs']}")
 
@@ -1813,7 +1822,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
 
         if legal:
             best_move_int = move_to_int(legal[0])  # Default to first legal move
-            best_score = -MAX_SCORE
+            best_score = -config.MAX_SCORE
 
             # -------- NEW: Do a shallow 1-ply search with captures/checks --------
             # This provides some tactical awareness without calling quiescence
@@ -1832,7 +1841,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                 # Check for immediate game-ending conditions
                 if board.is_checkmate():
                     # We just delivered checkmate!
-                    score = MAX_SCORE - board.ply()
+                    score = config.MAX_SCORE - board.ply()
                     board.pop()
                     get_nn_evaluator().pop()
                     best_move_int = move_to_int(move)
@@ -1846,7 +1855,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                 else:
                     # Do a 1-ply tactical check: look at opponent's best response
                     # Only examine captures and checks to limit explosion
-                    opp_best = MAX_SCORE  # From opponent's perspective (we want to minimize this)
+                    opp_best = config.MAX_SCORE  # From opponent's perspective (we want to minimize this)
                     opp_moves_checked = 0
                     max_opp_moves = 8  # Limit opponent moves to check
 
@@ -1872,7 +1881,7 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
 
                         # Check for mate threats
                         if board.is_checkmate():
-                            opp_score = MAX_SCORE - board.ply()  # Opponent wins
+                            opp_score = config.MAX_SCORE - board.ply()  # Opponent wins
                         else:
                             # Use NN eval for the resulting position (already pushed)
                             opp_score = -evaluate_nn(board)  # Negate because it's opponent's view
@@ -1924,8 +1933,8 @@ def find_best_move(fen, max_depth=MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=T
                        f"SEVERE overrun: {elapsed:.2f}s vs {time_limit:.2f}s limit, QS_max_depth={_qs_stats['max_depth_reached']}")
 
     # DIAG: Check score bounds
-    if abs(best_score) > MAX_SCORE:
-        _diag_warn("score_out_of_bounds", f"Score {best_score} exceeds MAX_SCORE {MAX_SCORE}")
+    if abs(best_score) > config.MAX_SCORE:
+        _diag_warn("score_out_of_bounds", f"Score {best_score} exceeds MAX_SCORE {config.MAX_SCORE}")
 
     # Convert integer move and PV to chess.Move for return value
     # Validate PV to guard against Lazy SMP TT race conditions

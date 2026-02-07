@@ -8,9 +8,55 @@ Integration (add to uci.py after defining UCI_TUNABLES):
     from uci_config_bridge import register_config_tunables
     register_config_tunables(UCI_TUNABLES, UCIOption)
 """
-import os
+from typing import Any, Callable, Dict
 
 import config
+from chess_engine import configure_multi_thread_blas, configure_nn_type
+
+
+class UCIOption:
+    def __init__(
+        self,
+        name: str,
+        opt_type: str,
+        default: Any,
+        min_val: Any = None,
+        max_val: Any = None,
+        apply: Callable[[Any], None] = None,
+    ):
+        self.name = name
+        self.type = opt_type  # "spin", "check", "string"
+        self.default = default
+        self.min = min_val
+        self.max = max_val
+        self.apply = apply
+
+    def uci_declaration(self) -> str:
+        if self.type == "spin":
+            return (
+                f"option name {self.name} type spin "
+                f"default {self.default} min {self.min} max {self.max}"
+            )
+        elif self.type == "check":
+            default = "true" if self.default else "false"
+            return f"option name {self.name} type check default {default}"
+        elif self.type == "string":
+            return f"option name {self.name} type string default {self.default}"
+        else:
+            raise ValueError(f"Unknown UCI option type: {self.type}")
+
+    def parse_value(self, value: str):
+        if self.type == "spin":
+            return int(value)
+        elif self.type == "check":
+            return value.lower() == "true"
+        elif self.type == "string":
+            return value
+        else:
+            return value
+
+
+UCI_TUNABLES: Dict[str, UCIOption] = {}
 
 # ---------- classification ----------
 
@@ -83,7 +129,7 @@ def _register_string(d, cls, key, default_str):
 
 # ---------- public API ----------
 
-def register_config_tunables(uci_tunables_dict, UCIOptionClass):
+def register_config_tunables():
     """
     Scan config module and register every tunable parameter
     as a UCI option.
@@ -99,16 +145,37 @@ def register_config_tunables(uci_tunables_dict, UCIOptionClass):
             continue
         if not isinstance(val, (int, float, bool, str, list)):
             continue
-        if key in uci_tunables_dict:          # already registered manually
+        if key in UCI_TUNABLES:          # already registered manually
             continue
 
         if key in _LIST_PARAMS:
-            _register_string(uci_tunables_dict, UCIOptionClass, key, str(val))
+            _register_string(UCI_TUNABLES, UCIOption, key, str(val))
         elif key in _FLOAT_PARAMS or isinstance(val, float):
-            _register_string(uci_tunables_dict, UCIOptionClass, key, str(val))
+            _register_string(UCI_TUNABLES, UCIOption, key, str(val))
         elif isinstance(val, bool):
-            _register_check(uci_tunables_dict, UCIOptionClass, key, val)
+            _register_check(UCI_TUNABLES, UCIOption, key, val)
         elif isinstance(val, int):
-            _register_spin(uci_tunables_dict, UCIOptionClass, key, val)
+            _register_spin(UCI_TUNABLES, UCIOption, key, val)
         elif isinstance(val, str):
-            _register_string(uci_tunables_dict, UCIOptionClass, key, val)
+            _register_string(UCI_TUNABLES, UCIOption, key, val)
+
+def print_uci_options():
+    for opt in UCI_TUNABLES.values():
+        print(opt.uci_declaration(), flush=True)
+
+
+def apply_uci_option(name: str, value: str) -> bool:
+    opt = UCI_TUNABLES.get(name)
+    if not opt:
+        return False
+
+    parsed_value = opt.parse_value(value)
+    if opt.apply:
+        opt.apply(parsed_value)
+
+    if name == "MULTI_THREAD_BLAS":
+        configure_multi_thread_blas() # MULTI_THREAD_BLAS needs special handling
+    elif name == "NN_TYPE":
+        configure_nn_type()
+
+    return True
