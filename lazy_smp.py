@@ -8,18 +8,10 @@ Lazy SMP approach:
 - No explicit synchronization - TT provides implicit coordination
 - Different workers use different eval noise seeds for search diversity
 
-Architecture:
-- Each worker gets its own ChessEngine instance (isolated heuristics, counters)
-- Workers call engine.find_best_move() with on_depth_complete callback
-  for intermediate result reporting (fixes blocking-call problem)
-- _SearchControl.generation is a plain int (no multiprocessing.Value)
-- NN evaluators are pooled and reused across searches
-
-Fixes in this version:
-- Eval noise diversity: each worker gets unique seed for different search trees
-- MIN_DEPTH enforcement: waits for depth 5 before stopping on time limit
-- Queue draining: collects remaining results after workers stop
-- Startup race fix: MIN_RESULT_WAIT ensures at least one result
+Optimizations in this version:
+- Pre-populated NN evaluator pool (avoid model loading per search)
+- PV validation only at end (not on every depth improvement)
+- Callbacks only for depth improvements (skip redundant reports)
 """
 
 import threading
@@ -52,7 +44,7 @@ MIN_PREFERRED_DEPTH = 5  # Minimum depth before allowing time-based stop
 
 
 def init_worker_pool(num_workers: int):
-    """Initialize the worker pool configuration."""
+    """Initialize the worker pool configuration and pre-populate NN evaluator pool."""
     global _pool_initialized, _num_workers, _result_queue
 
     if num_workers <= 1:
@@ -63,6 +55,25 @@ def init_worker_pool(num_workers: int):
     _num_workers = num_workers
     _result_queue = Queue()
     _pool_initialized = True
+
+    # FIX #1: Pre-populate NN evaluator pool to avoid model loading during search
+    # Note: chess_engine.py has a global nn_evaluator that gets used when pool is empty
+    # We only need (num_workers - 1) additional evaluators in the pool
+    from chess_engine import _nn_eval_pool, _nn_eval_pool_lock, MODEL_PATH
+    from nn_evaluator import NNEvaluator
+
+    with _nn_eval_pool_lock:
+        current_pool_size = len(_nn_eval_pool)
+        # We need (num_workers - 1) in pool because get_nn_evaluator_from_pool
+        # creates one from global when pool is empty
+        needed = (num_workers - 1) - current_pool_size
+        if needed > 0:
+            _mp_diag_print(f"Pre-populating NN evaluator pool with {needed} evaluators...")
+            for _ in range(needed):
+                evaluator = NNEvaluator.create(CachedBoard(), config.NN_TYPE, MODEL_PATH)
+                _nn_eval_pool.append(evaluator)
+            _mp_diag_print(f"NN evaluator pool size: {len(_nn_eval_pool)}")
+
     _mp_diag_print(f"Lazy SMP initialized with {num_workers} threads")
 
 
@@ -89,20 +100,25 @@ def shutdown_worker_pool():
 
 
 def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
-                     result_queue: Queue):
+                     result_queue: Queue, start_delay: float = 0.0):
     """
     Lazy SMP worker thread.
 
     Each worker creates its own ChessEngine instance with isolated state,
     then calls engine.find_best_move() with a callback for intermediate
-    result reporting. This fixes the blocking-call problem where workers
-    could not report results until find_best_move() returned.
+    result reporting.
     """
     from chess_engine import (ChessEngine, _SearchControl, TimeControl,
-                              get_nn_evaluator_from_pool, return_nn_evaluator_to_pool,
-                              control_dict_size, nn_eval_cache, diag_print)
+                              get_nn_evaluator_from_pool, return_nn_evaluator_to_pool)
 
-    # Get an NN evaluator from the pool (or create new)
+    # FIX: Stagger worker starts to reduce contention on pool lock and initial TT access
+    if start_delay > 0:
+        time.sleep(start_delay)
+        # Check if search was cancelled during delay
+        if _SearchControl.generation != generation:
+            return
+
+    # Get an NN evaluator from the pool (should be pre-populated now)
     nn_eval = get_nn_evaluator_from_pool()
 
     # Create per-worker engine with isolated state
@@ -113,30 +129,35 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
     )
 
     # Set unique eval noise seed for search diversity
-    # Each worker gets different seed -> different eval noise -> different search tree
     eval_seed = worker_id * 100003 + generation * 1009
     engine.set_eval_noise(5, seed=eval_seed)
     _mp_diag_print(f"Worker {worker_id} eval noise seed: {eval_seed}")
 
-    # Stagger starting depths for diversity
-    #start_depth = 1 + (worker_id % 2)
+    # FIX #4: Track last reported depth to skip redundant callbacks
+    last_reported_depth = 0
 
     def on_depth_complete(depth, move_int, score, pv_int, nodes):
-        """Callback: report each completed depth to the result queue."""
+        """Callback: report only when depth improves."""
+        nonlocal last_reported_depth
+
+        # Skip if this depth was already reported
+        if depth <= last_reported_depth:
+            return
+
         # Check if this search is still active
         if _SearchControl.generation != generation:
             return
-        result = (worker_id, move_int, score, list(pv_int), nodes, depth, generation)
+
+        last_reported_depth = depth
+
+        # Avoid list() copy if already a list
+        pv_copy = pv_int if isinstance(pv_int, list) else list(pv_int)
+        result = (worker_id, move_int, score, pv_copy, nodes, depth, generation)
         result_queue.put(result)
         _mp_diag_print(f"Worker {worker_id} completed depth {depth}: "
                        f"{int_to_move(move_int).uci()} score={score}")
 
     try:
-        # Workers call find_best_move with:
-        # - suppress_info=True (don't print UCI info from workers)
-        # - on_depth_complete callback for intermediate results
-        # - clear_tt=False (TT is shared, cleared by main thread)
-        # - use_existing_time_control=True (main thread sets TimeControl)
         engine.find_best_move(
             fen,
             max_depth=max_depth,
@@ -161,10 +182,6 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     """
     Find best move using Lazy SMP parallel search.
 
-    All workers search the same position. They communicate implicitly
-    through the shared transposition table. Workers report per-depth
-    results via callback to avoid the blocking-call problem.
-
     Returns:
         Tuple of (best_move, score, pv, nodes, nps)
     """
@@ -188,7 +205,6 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         TimeControl.stop_search = False
         TimeControl.start_time = start_time
         TimeControl.time_limit = time_limit
-        # Use hard_stop for MP too — workers check TimeControl.stop_search
         if time_limit:
             grace_period = max(time_limit * 0.5, 0.3)
             TimeControl.hard_stop_time = start_time + time_limit + grace_period
@@ -223,11 +239,9 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     # Single legal move — no need to spawn workers
     if len(legal_moves) == 1:
         _mp_diag_print("Single legal move, returning immediately")
-        bm_int = move_to_int(legal_moves[0])
         return legal_moves[0], 0, [legal_moves[0]], 0, 0
 
     _mp_diag_print(f"Lazy SMP search gen={current_generation} with {_num_workers} threads")
-    _mp_diag_print(f"FEN: {fen[:60]}...")
 
     # Clear result queue
     while not _result_queue.empty():
@@ -236,12 +250,14 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         except Empty:
             break
 
-    # Start worker threads
+    # Start worker threads with staggered delays to reduce contention
     _worker_threads = []
     for i in range(_num_workers):
+        # Stagger: worker 0 starts immediately, worker 1 after 10ms, etc.
+        start_delay = i * 0.01  # 10ms stagger per worker
         t = threading.Thread(
             target=_lazy_smp_worker,
-            args=(i, fen, max_depth, current_generation, _result_queue),
+            args=(i, fen, max_depth, current_generation, _result_queue, start_delay),
             daemon=True
         )
         t.start()
@@ -270,7 +286,6 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         # Check for external stop via TimeControl (UCI 'stop')
         if TimeControl.stop_search:
             _mp_diag_print("TimeControl.stop_search detected")
-            # Still try to get MIN_DEPTH if possible
             if best_depth >= MIN_PREFERRED_DEPTH or current_time >= hard_timeout:
                 _mp_diag_print(f"Stopping workers (depth={best_depth})")
                 _SearchControl.generation = 0
@@ -285,7 +300,6 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
                 soft_limit_passed = True
                 _mp_diag_print(f"Time limit reached at depth {best_depth}")
 
-            # Wait for MIN_DEPTH before stopping
             if best_depth >= MIN_PREFERRED_DEPTH:
                 _mp_diag_print(f"Reached MIN_DEPTH {best_depth}, stopping workers")
                 _SearchControl.generation = 0
@@ -295,9 +309,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
                 _SearchControl.generation = 0
                 break
             elif best_result is None and current_time < min_wait_until:
-                # Still waiting for first result
-                pass
-            # else: continue waiting for MIN_DEPTH
+                pass  # Still waiting for first result
 
         # Hard timeout safety check
         if current_time >= hard_timeout:
@@ -306,7 +318,9 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
             break
 
         try:
-            result = _result_queue.get(timeout=0.05)
+            # Use get_nowait() to minimize lock holding time
+            # Then sleep briefly if queue was empty
+            result = _result_queue.get_nowait()
             worker_id, move_int, score, pv, nodes, depth, gen = result
 
             # Ignore stale results
@@ -322,12 +336,10 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
                 _mp_diag_print(f"New best from worker {worker_id}: "
                                f"{int_to_move(move_int).uci()} score={score} depth={depth}")
 
-                # Print UCI info for best result
+                # FIX #3: Print basic UCI info without PV validation
+                # (PV will be validated once at the end)
                 nps = int(total_nodes / elapsed) if elapsed > 0 else 0
-                board_tmp = CachedBoard(fen)
-                validated_pv = validate_pv_int(board_tmp, pv)
-                pv_uci = ' '.join(int_to_move(m).uci() for m in validated_pv)
-                print(f"info depth {depth} score cp {score} nodes {total_nodes} nps {nps} pv {pv_uci}",
+                print(f"info depth {depth} score cp {score} nodes {total_nodes} nps {nps}",
                       flush=True)
 
                 # Stop if we've reached MIN_DEPTH after soft limit passed
@@ -342,6 +354,9 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
                                f"{int_to_move(move_int).uci()} score={score} depth={depth}")
 
         except Empty:
+            # Brief sleep to avoid busy-waiting, but short enough to be responsive
+            time.sleep(0.005)  # 5ms
+
             # Check if all threads have finished
             all_done = all(not t.is_alive() for t in _worker_threads)
             if all_done:
@@ -354,7 +369,6 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         t.join(timeout=0.5)
 
     # Drain any remaining results from queue
-    _mp_diag_print("Draining remaining results from queue...")
     while not _result_queue.empty():
         try:
             result = _result_queue.get_nowait()
@@ -364,7 +378,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
             total_nodes = max(total_nodes, nodes)
             if best_result is None or depth > best_result[4]:
                 best_result = (move_int, score, pv, nodes, depth)
-                _mp_diag_print(f"Drained better result: depth={depth} move={int_to_move(move_int).uci()}")
+                _mp_diag_print(f"Drained better result: depth={depth}")
         except Empty:
             break
 
@@ -391,12 +405,17 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         _mp_diag_print(f"ERROR: Best move {best_move.uci()} is illegal!")
         return legal_moves[0], 0, [legal_moves[0]], 0, 0
 
-    # Convert PV to moves
+    # FIX #3: Validate PV only once at the end
     board_final = CachedBoard(fen)
     best_pv = pv_int_to_moves(validate_pv_int(board_final, pv_int))
 
     elapsed = time.perf_counter() - start_time
     nps = int(total_nodes / elapsed) if elapsed > 0 else 0
+
+    # Print final info with validated PV
+    pv_uci = ' '.join(m.uci() for m in best_pv)
+    print(f"info depth {depth} score cp {score} nodes {total_nodes} nps {nps} pv {pv_uci}",
+          flush=True)
 
     return best_move, score, best_pv, total_nodes, nps
 
