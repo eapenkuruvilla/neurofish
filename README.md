@@ -232,6 +232,7 @@ conda activate neurofish
 | Cython acceleration              | +107       |
 | Quantization (INT8)              | +46        |
 | Quantization (INT16)             | -47        |
+| Pondering                        | +90        |
 | BLAS multi-core without Lazy SMP | +35        |
 | BLAS multi-core with Lazy SMP    | -176       |
 

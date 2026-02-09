@@ -1,4 +1,5 @@
 import os
+import sys
 
 # Track which parameters were overridden from environment
 _overridden_params = []
@@ -46,21 +47,22 @@ def _env_str(key, default):
 MAX_SCORE = _env_int('MAX_SCORE', 10_000)
 TANH_SCALE = _env_int('TANH_SCALE', 410)  # Stockfish value
 
-PONDERING_ENABLED = _env_bool('PONDERING_ENABLED', True)
-
 # -------- DIAGNOSTIC CONTROL --------
 # Set IS_DIAGNOSTIC = True for development/debugging builds
 # Or enable via UCI "debug on" command
 DIAGNOSTIC = _env_bool('DIAGNOSTIC', False)  # Master switch for diagnostic output
 debug_mode = _env_bool('DEBUG_MODE', False)  # Runtime toggle via UCI "debug on/off"
 
+PONDERING_ENABLED = _env_bool('PONDERING_ENABLED', True)
+
 # Multiprocessing configuration
-MAX_THREADS = _env_int('MAX_THREADS', 1)  # 1 or less disables multiprocessing, UCI option "Threads"
+MAX_THREADS = _env_int('MAX_THREADS', 2)  # 1 or less disables multiprocessing, UCI option "Threads"
 MULTI_THREAD_BLAS = _env_bool('MULTI_THREAD_BLAS', False)
 NN_ENABLED = _env_bool('NN_ENABLED', True)
 NN_TYPE = _env_str('NN_TYPE', "NNUE")
-L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "NONE")  # Options: "NONE" (FP32), "INT8", "INT16"
 FULL_NN_EVAL_FREQ = _env_int('FULL_NN_EVAL_FREQ', 3000)  # Increase to 50_000 after initial testing
+
+L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "NONE")  # Options: "NONE" (FP32), "INT8", "INT16"
 
 # Note when NN related parameters are optimized, use real games as positional understanding will be reflected.
 # The non-NN parameters are primarily about tactics, and they can be quickly tuned using test positions.
@@ -178,3 +180,18 @@ def get_overridden_params():
 # Auto-print on import (can be disabled by setting QUIET_CONFIG=true)
 if not _env_bool('QUIET_CONFIG', False) and _overridden_params:
     print_overridden_config()
+
+
+def configure_multi_thread_blas() -> None:
+    if not MULTI_THREAD_BLAS:
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+        os.environ["OMP_NUM_THREADS"] = "1"
+        print("✓ Disabling multi-threaded BLAS", file=sys.stderr)
+    else:
+        del os.environ['OPENBLAS_NUM_THREADS']
+        del os.environ['MKL_NUM_THREADS']
+        del os.environ['OMP_NUM_THREADS']
+        print("✓ Allowing multi-threaded BLAS", file=sys.stderr)
+
+configure_multi_thread_blas()

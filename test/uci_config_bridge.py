@@ -11,7 +11,8 @@ Integration (add to uci.py after defining UCI_TUNABLES):
 from typing import Any, Callable, Dict
 
 import config
-from chess_engine import configure_multi_thread_blas, configure_nn_type
+from chess_engine import configure_nn_type
+from config import configure_multi_thread_blas
 
 
 class UCIOption:

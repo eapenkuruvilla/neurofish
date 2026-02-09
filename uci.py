@@ -7,10 +7,10 @@ import chess
 import chess.polyglot
 
 import config
-from chess_engine import (find_best_move, TimeControl, dnn_eval_cache,
+from chess_engine import (find_best_move, TimeControl, nn_eval_cache,
                           clear_game_history, game_position_history, kpi,
                           diag_summary, set_debug_mode,
-                          is_debug_enabled, diag_print, return_nn_evaluator_to_pool)
+                          is_debug_enabled, diag_print, _get_main_engine)
 from book_move import init_opening_book, get_book_move
 import lazy_smp
 from test.uci_config_bridge import register_config_tunables, print_uci_options, \
@@ -137,7 +137,7 @@ def uci_loop():
                     print(f"info string {summary}", flush=True)
 
             board.reset()
-            dnn_eval_cache.clear()
+            nn_eval_cache.clear()
             clear_game_history()  # Also resets diagnostic counters
             resign_counter = 0
             is_pondering = False
@@ -425,8 +425,6 @@ def uci_loop():
 
                     is_pondering = False
                     TimeControl.is_ponder_search = False
-                    # Return NN evaluator to pool for reuse by future search threads
-                    return_nn_evaluator_to_pool()
                     diag_print(f"search_and_report finished")
 
                 search_thread = threading.Thread(target=search_and_report)
