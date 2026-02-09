@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-tune.py — Self-play parameter tuning for Neurofish chess engine.
+tune.py Ã¢â‚¬â€ Self-play parameter tuning for Neurofish chess engine.
 
 Runs a round-robin tournament via cutechess-cli where each participant
 is the same engine configured with a different value of one UCI parameter.
@@ -33,11 +33,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import config
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  Bradley-Terry Maximum-Likelihood Elo Estimation            ║
-# ╚══════════════════════════════════════════════════════════════╝
+# Ã¢â€¢â€Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢â€”
+# Ã¢â€¢â€˜  Bradley-Terry Maximum-Likelihood Elo Estimation            Ã¢â€¢â€˜
+# Ã¢â€¢Å¡Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 class BradleyTerry:
     """
@@ -75,7 +77,7 @@ class BradleyTerry:
         pw2, pl2, pd2 = self.raw.get((j, i), (0, 0, 0))
         self.raw[(j, i)] = (pw2 + wins_b, pl2 + wins_a, pd2 + draws)
 
-    # ── MLE ──────────────────────────────────────────────────
+    # Ã¢â€â‚¬Ã¢â€â‚¬ MLE Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     def estimate(self, max_iter: int = 10_000, tol: float = 1e-8) \
             -> Dict[str, Tuple[float, float, float]]:
@@ -141,7 +143,7 @@ class BradleyTerry:
                 se_elo.append(float('inf'))
         return se_elo
 
-    # ── display helpers ──────────────────────────────────────
+    # Ã¢â€â‚¬Ã¢â€â‚¬ display helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
     def crosstable_str(self) -> str:
         """Formatted cross-table with W-L-D per pairing."""
@@ -179,9 +181,9 @@ class BradleyTerry:
         return tw, tl, td
 
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  Likelihood of Superiority (pairwise)                       ║
-# ╚══════════════════════════════════════════════════════════════╝
+# Ã¢â€¢â€Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢â€”
+# Ã¢â€¢â€˜  Likelihood of Superiority (pairwise)                       Ã¢â€¢â€˜
+# Ã¢â€¢Å¡Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 def compute_los(wins: float, losses: float) -> float:
     """
@@ -197,9 +199,9 @@ def compute_los(wins: float, losses: float) -> float:
     return 50.0 * (1.0 + math.erf(z / math.sqrt(2.0)))
 
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  cutechess-cli output parsing                               ║
-# ╚══════════════════════════════════════════════════════════════╝
+# Ã¢â€¢â€Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢â€”
+# Ã¢â€¢â€˜  cutechess-cli output parsing                               Ã¢â€¢â€˜
+# Ã¢â€¢Å¡Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 # Matches: "Finished game 1 (nf_INT8 vs nf_INT16): 1-0 {White mates}"
 _FINISHED_RE = re.compile(
@@ -223,7 +225,7 @@ def parse_cutechess_output(output: str,
     """
     name_set = set(player_names)
 
-    # ── collect pairwise W-L-D from individual game results ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ collect pairwise W-L-D from individual game results Ã¢â€â‚¬Ã¢â€â‚¬
     pair_results: Dict[Tuple[str, str], List[int]] = {}  # (a,b) -> [wins_a, wins_b, draws]
 
     for line in output.splitlines():
@@ -269,9 +271,9 @@ def parse_cutechess_output(output: str,
     return bt
 
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  Polyglot .bin → EPD converter                              ║
-# ╚══════════════════════════════════════════════════════════════╝
+# Ã¢â€¢â€Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢â€”
+# Ã¢â€¢â€˜  Polyglot .bin Ã¢â€ â€™ EPD converter                              Ã¢â€¢â€˜
+# Ã¢â€¢Å¡Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 def polyglot_to_epd(bin_path: str, output_path: str,
                     num_positions: int = 200, max_ply: int = 12) -> int:
@@ -322,9 +324,9 @@ def polyglot_to_epd(bin_path: str, output_path: str,
     return len(positions)
 
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  cutechess-cli command builder                              ║
-# ╚══════════════════════════════════════════════════════════════╝
+# Ã¢â€¢â€Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢â€”
+# Ã¢â€¢â€˜  cutechess-cli command builder                              Ã¢â€¢â€˜
+# Ã¢â€¢Å¡Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 def build_cutechess_cmd(args, player_names: List[str],
                         param_name: str, values: List[str]) -> List[str]:
@@ -332,41 +334,44 @@ def build_cutechess_cmd(args, player_names: List[str],
 
     cmd: List[str] = [args.cutechess, '-tournament', 'round-robin']
 
-    # ── per-engine configuration ──
+    # â”€â”€ per-engine configuration â”€â”€
     for name, val in zip(player_names, values):
-        cmd += ['-engine',
+        engine_args = ['-engine',
                 f'cmd={args.engine_cmd}',
                 f'name={name}',
                 f'option.{param_name}={val}']
+        if args.ponder:
+            engine_args.append('ponder')
+        cmd += engine_args
 
-    # ── common engine settings ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ common engine settings Ã¢â€â‚¬Ã¢â€â‚¬
     each_args = ['proto=uci', f'tc={args.tc}', f'timemargin={args.timemargin}']
     if args.threads is not None:
         each_args.append(f'option.Threads={args.threads}')
     cmd += ['-each'] + each_args
 
-    # ── opening book ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ opening book Ã¢â€â‚¬Ã¢â€â‚¬
     book_path = args.book
     if book_path:
         if book_path.endswith('.bin'):
             epd_path = tempfile.mktemp(suffix='.epd', prefix='tune_book_')
-            print(f"Converting Polyglot book → EPD ...")
+            print(f"Converting Polyglot book Ã¢â€ â€™ EPD ...")
             n = polyglot_to_epd(book_path, epd_path,
                                 num_positions=max(200, args.games * 3))
-            print(f"  Extracted {n} positions → {epd_path}")
+            print(f"  Extracted {n} positions Ã¢â€ â€™ {epd_path}")
             book_path = epd_path
 
         fmt = 'epd' if book_path.endswith('.epd') else 'pgn'
         cmd += ['-openings', f'file={book_path}', f'format={fmt}',
                 'policy=round']
 
-    # ── rounds & pairing ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ rounds & pairing Ã¢â€â‚¬Ã¢â€â‚¬
     rounds = max(1, args.games // 2)
     cmd += ['-games', '2',             # each opening from both sides
             '-rounds', str(rounds),
             '-repeat']                  # same opening for the colour-swap
 
-    # ── adjudication ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ adjudication Ã¢â€â‚¬Ã¢â€â‚¬
     cmd += ['-draw',
             f'movenumber={args.draw_movenumber}',
             f'movecount={args.draw_movecount}',
@@ -377,33 +382,33 @@ def build_cutechess_cmd(args, player_names: List[str],
     cmd += ['-maxmoves', str(args.maxmoves)]
     cmd += ['-recover']
 
-    # ── concurrency (sequential) ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ concurrency (sequential) Ã¢â€â‚¬Ã¢â€â‚¬
     cmd += ['-concurrency', '1']
 
-    # ── PGN output ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ PGN output Ã¢â€â‚¬Ã¢â€â‚¬
     if args.pgnout:
         cmd += ['-pgnout', args.pgnout]
 
     return cmd
 
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  Result display                                             ║
-# ╚══════════════════════════════════════════════════════════════╝
+# Ã¢â€¢â€Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢â€”
+# Ã¢â€¢â€˜  Result display                                             Ã¢â€¢â€˜
+# Ã¢â€¢Å¡Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 def print_results(param_name: str, values: List[str],
                   player_names: List[str], bt: BradleyTerry,
                   elo_results: Dict[str, Tuple[float, float, float]]):
 
-    # ── cross-table ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ cross-table Ã¢â€â‚¬Ã¢â€â‚¬
     print(f"\n{'=' * 80}")
     print(f"  CROSS TABLE")
     print(f"{'=' * 80}\n")
     print(bt.crosstable_str())
 
-    # ── ranked Elo table ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ ranked Elo table Ã¢â€â‚¬Ã¢â€â‚¬
     print(f"\n{'=' * 80}")
-    print(f"  TUNING RESULTS — {param_name}")
+    print(f"  TUNING RESULTS Ã¢â‚¬â€ {param_name}")
     print(f"{'=' * 80}\n")
 
     rows = []
@@ -417,7 +422,7 @@ def print_results(param_name: str, values: List[str],
 
     rows.sort(key=lambda r: r[1], reverse=True)
 
-    print(f"  {'Value':<25} {'Elo':>7} {'± 95%':>8}"
+    print(f"  {'Value':<25} {'Elo':>7} {'Ã‚Â± 95%':>8}"
           f"  {'W-L-D':>12} {'Score%':>7} {'LOS%':>6}")
     print(f"  {'-' * 72}")
 
@@ -430,7 +435,7 @@ def print_results(param_name: str, values: List[str],
 
     print(f"  {'-' * 72}")
 
-    # ── best value summary ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ best value summary Ã¢â€â‚¬Ã¢â€â‚¬
     best = rows[0]
     print(f"\n  BEST: {param_name} = {best[0]}")
     print(f"        Elo: {best[1]:+.1f}  "
@@ -442,20 +447,20 @@ def print_results(param_name: str, values: List[str],
         gap = best[1] - rows[1][1]
         print(f"        Gap to 2nd ({rows[1][0]}): {gap:+.1f} Elo")
 
-    # ── significance warning ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ significance warning Ã¢â€â‚¬Ã¢â€â‚¬
     if len(rows) > 1:
         top_lo = best[2]
         second_hi = rows[1][3]
         if top_lo < second_hi:
-            print(f"\n  ⚠  Confidence intervals of top-2 overlap — "
+            print(f"\n  Ã¢Å¡Â   Confidence intervals of top-2 overlap Ã¢â‚¬â€ "
                   f"consider more games for significance.")
 
     print(f"\n{'=' * 80}\n")
 
 
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  Main                                                       ║
-# ╚══════════════════════════════════════════════════════════════╝
+# Ã¢â€¢â€Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢â€”
+# Ã¢â€¢â€˜  Main                                                       Ã¢â€¢â€˜
+# Ã¢â€¢Å¡Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 
 def main():
     parser = argparse.ArgumentParser(
@@ -481,10 +486,14 @@ Examples:
                      help="Games per pair (default: 30)")
     grp.add_argument("--tc", default="40/120+1",
                      help="Time control (default: 40/120+1)")
-    grp.add_argument("--threads", "-t", type=int, default=None,
+    grp.add_argument("--threads", "-t", type=int, default=config.MAX_THREADS,
                      help="UCI Threads per engine instance")
     grp.add_argument("--book", "-b", default=f"{SCRIPT_DIR}/../book/komodo.bin",
                      help="Opening book (.epd, .pgn, or .bin)")
+    grp.add_argument("--ponder", dest="ponder",
+                     default=config.PONDERING_ENABLED,
+                     action=argparse.BooleanOptionalAction,
+                     help=f"Enable pondering (default: {config.PONDERING_ENABLED})")
 
     # paths
     grp2 = parser.add_argument_group("paths")
@@ -510,7 +519,7 @@ Examples:
 
     args = parser.parse_args()
 
-    # ── auto-detect engine ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ auto-detect engine Ã¢â€â‚¬Ã¢â€â‚¬
     script_dir = os.path.dirname(os.path.abspath(__file__))
     if not args.engine_cmd:
         for cand in [
@@ -522,10 +531,10 @@ Examples:
                 args.engine_cmd = os.path.abspath(cand)
                 break
         if not args.engine_cmd:
-            print("Error: Could not find uci.sh — use --engine-cmd")
+            print("Error: Could not find uci.sh Ã¢â‚¬â€ use --engine-cmd")
             sys.exit(1)
 
-    # ── auto-detect cutechess-cli ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ auto-detect cutechess-cli Ã¢â€â‚¬Ã¢â€â‚¬
     if not args.cutechess:
         if shutil.which("cutechess-cli"):
             args.cutechess = "cutechess-cli"
@@ -539,18 +548,18 @@ Examples:
                     args.cutechess = os.path.abspath(cand)
                     break
         if not args.cutechess:
-            print("Error: Could not find cutechess-cli — use --cutechess")
+            print("Error: Could not find cutechess-cli Ã¢â‚¬â€ use --cutechess")
             sys.exit(1)
 
     if not args.pgnout:
         args.pgnout = tempfile.mktemp(suffix='.pgn', prefix='tune_')
 
-    # ── player names (must be unique for cutechess) ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ player names (must be unique for cutechess) Ã¢â€â‚¬Ã¢â€â‚¬
     player_names = [f"nf_{v}" for v in args.values]
     if len(set(player_names)) != len(player_names):
         player_names = [f"nf_{i}_{v}" for i, v in enumerate(args.values)]
 
-    # ── plan summary ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ plan summary Ã¢â€â‚¬Ã¢â€â‚¬
     n = len(args.values)
     pairs = n * (n - 1) // 2
     total_games = pairs * args.games
@@ -567,10 +576,11 @@ Examples:
     print(f"#  Engine:        {args.engine_cmd}")
     print(f"#  cutechess-cli: {args.cutechess}")
     print(f"#  Opening book:  {args.book or '(none)'}")
+    print(f"#  Ponder:        {args.ponder}")
     print(f"#  PGN output:    {args.pgnout}")
     print(f"{'#' * 70}\n")
 
-    # ── build & display command ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ build & display command Ã¢â€â‚¬Ã¢â€â‚¬
     cmd = build_cutechess_cmd(args, player_names,
                               args.param_name, args.values)
 
@@ -584,6 +594,52 @@ Examples:
 
     # ── run cutechess-cli ──
     output_lines: List[str] = []
+
+    # Progress tracking for 3+ player tournaments
+    player_stats: Dict[str, List[int]] = {name: [0, 0, 0] for name in player_names}  # [W, L, D]
+    games_completed = 0
+    progress_interval = max(1, total_games // 20)  # Show progress ~20 times, minimum every game
+
+    def update_progress(line: str) -> bool:
+        """Parse finished game line and update stats. Returns True if updated."""
+        nonlocal games_completed
+        m = _FINISHED_RE.search(line)
+        if not m:
+            return False
+
+        pa, pb, result = m.group(1), m.group(2), m.group(3)
+        if pa not in player_stats or pb not in player_stats:
+            return False
+
+        games_completed += 1
+
+        if result == '1-0':
+            player_stats[pa][0] += 1  # pa wins
+            player_stats[pb][1] += 1  # pb loses
+        elif result == '0-1':
+            player_stats[pa][1] += 1  # pa loses
+            player_stats[pb][0] += 1  # pb wins
+        elif result in ('1/2-1/2', '*'):
+            player_stats[pa][2] += 1  # draw
+            player_stats[pb][2] += 1
+        return True
+
+    def print_progress():
+        """Print current standings."""
+        # Sort by score (wins + 0.5*draws)
+        ranked = sorted(
+            player_stats.items(),
+            key=lambda x: x[1][0] + 0.5 * x[1][2],
+            reverse=True
+        )
+        parts = []
+        for name, (w, l, d) in ranked:
+            score = w + 0.5 * d
+            total = w + l + d
+            pct = (score / total * 100) if total > 0 else 0
+            parts.append(f"{name}: +{w}-{l}={d} ({pct:.0f}%)")
+        print(f"  ── Progress {games_completed}/{total_games}: {' | '.join(parts)}")
+
     try:
         process = subprocess.Popen(
             cmd,
@@ -597,6 +653,11 @@ Examples:
             print(line, end='')
             output_lines.append(line)
 
+            # Track progress for 3+ player tournaments
+            if n >= 3 and update_progress(line):
+                if games_completed % progress_interval == 0 or games_completed == total_games:
+                    print_progress()
+
         process.wait()
         output = ''.join(output_lines)
 
@@ -608,19 +669,19 @@ Examples:
         print(f"Error: Could not execute: {cmd[0]}")
         sys.exit(1)
     except KeyboardInterrupt:
-        print("\n\nInterrupted — parsing partial results …")
+        print("\n\nInterrupted Ã¢â‚¬â€ parsing partial results Ã¢â‚¬Â¦")
         process.terminate()
         output = ''.join(output_lines)
 
-    # ── check for engine failures ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ check for engine failures Ã¢â€â‚¬Ã¢â€â‚¬
     if "Could not initialize player" in output:
         print("\n*** ENGINE INITIALIZATION FAILED ***")
         print("Verify that uci.sh starts correctly and that")
         print("uci_config_bridge.py is integrated (the engine must")
-        print(f"accept  setoption name {args.param_name} value …).")
+        print(f"accept  setoption name {args.param_name} value Ã¢â‚¬Â¦).")
         sys.exit(1)
 
-    # ── parse & analyse ──
+    # Ã¢â€â‚¬Ã¢â€â‚¬ parse & analyse Ã¢â€â‚¬Ã¢â€â‚¬
     bt = parse_cutechess_output(output, player_names)
 
     if not bt:

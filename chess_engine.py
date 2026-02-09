@@ -13,7 +13,7 @@ import random
 
 import config
 from cached_board import CachedBoard, move_to_int, int_to_move
-from config import configure_multi_thread_blas
+from config import configure_multi_core_blas
 from nn_evaluator import DNNEvaluator, NNUEEvaluator, NNEvaluator
 
 SCRIPT_DIR = Path(__file__).resolve().parent

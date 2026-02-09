@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict
 
 import config
 from chess_engine import configure_nn_type
-from config import configure_multi_thread_blas
+from config import configure_multi_core_blas
 
 
 class UCIOption:
@@ -174,8 +174,8 @@ def apply_uci_option(name: str, value: str) -> bool:
     if opt.apply:
         opt.apply(parsed_value)
 
-    if name == "MULTI_THREAD_BLAS":
-        configure_multi_thread_blas() # MULTI_THREAD_BLAS needs special handling
+    if name == "MULTI_CORE_BLAS":
+        configure_multi_core_blas() # MULTI_CORE_BLAS needs special handling
     elif name == "NN_TYPE":
         configure_nn_type()
 

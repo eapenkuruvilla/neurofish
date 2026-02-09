@@ -25,7 +25,7 @@ resign_counter = 0
 PONDER_TIME_LIMIT = 600  # Maximum time for ponder search (safety cap)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_BOOK_PATH = SCRIPT_DIR / f"../{SCRIPT_DIR}" / 'book' / 'komodo.bin'
+DEFAULT_BOOK_PATH = f"{SCRIPT_DIR}/../book/komodo.bin"
 
 search_thread = None
 use_book = True
@@ -83,7 +83,7 @@ def uci_loop():
             print("option name BookPath type string default " + str(DEFAULT_BOOK_PATH))
             print(f"option name ResignThreshold type spin default {RESIGN_THRESHOLD} min -10000 max 0")
             print(f"option name ResignMoves type spin default {RESIGN_CONSECUTIVE_MOVES} min 1 max 10")
-            print("option name Ponder type check default true")
+            print(f"option name Ponder type check default {'true' if config.PONDERING_ENABLED else 'false'}")
             print(f"option name Threads type spin default {config.MAX_THREADS} min 1 max 64")
 
             print_uci_options()

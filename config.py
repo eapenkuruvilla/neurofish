@@ -56,8 +56,8 @@ debug_mode = _env_bool('DEBUG_MODE', False)  # Runtime toggle via UCI "debug on/
 PONDERING_ENABLED = _env_bool('PONDERING_ENABLED', True)
 
 # Multiprocessing configuration
-MAX_THREADS = _env_int('MAX_THREADS', 2)  # 1 or less disables multiprocessing, UCI option "Threads"
-MULTI_THREAD_BLAS = _env_bool('MULTI_THREAD_BLAS', False)
+MAX_THREADS = _env_int('MAX_THREADS', 1)  # 1 or less disables multiprocessing, UCI option "Threads"
+MULTI_CORE_BLAS = _env_bool('MULTI_CORE_BLAS', False)
 NN_ENABLED = _env_bool('NN_ENABLED', True)
 NN_TYPE = _env_str('NN_TYPE', "NNUE")
 FULL_NN_EVAL_FREQ = _env_int('FULL_NN_EVAL_FREQ', 3000)  # Increase to 50_000 after initial testing
@@ -182,16 +182,16 @@ if not _env_bool('QUIET_CONFIG', False) and _overridden_params:
     print_overridden_config()
 
 
-def configure_multi_thread_blas() -> None:
-    if not MULTI_THREAD_BLAS:
+def configure_multi_core_blas() -> None:
+    if not MULTI_CORE_BLAS:
         os.environ["OPENBLAS_NUM_THREADS"] = "1"
         os.environ["MKL_NUM_THREADS"] = "1"
         os.environ["OMP_NUM_THREADS"] = "1"
-        print("✓ Disabling multi-threaded BLAS", file=sys.stderr)
+        print(f"info string Disabling multi-threaded BLAS", flush=True)
     else:
         del os.environ['OPENBLAS_NUM_THREADS']
         del os.environ['MKL_NUM_THREADS']
         del os.environ['OMP_NUM_THREADS']
-        print("✓ Allowing multi-threaded BLAS", file=sys.stderr)
+        print(f"info string Allowing multi-threaded BLAS", flush=True)
 
-configure_multi_thread_blas()
+configure_multi_core_blas()
