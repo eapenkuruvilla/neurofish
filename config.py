@@ -62,7 +62,8 @@ NN_ENABLED = _env_bool('NN_ENABLED', True)
 NN_TYPE = _env_str('NN_TYPE', "NNUE")
 FULL_NN_EVAL_FREQ = _env_int('FULL_NN_EVAL_FREQ', 3000)  # Increase to 50_000 after initial testing
 
-L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "INT16")  # Options: "NONE" (FP32), "INT8", "INT16"
+# TODO investigate why does INT16 results in failure of nn_tests due to accumulation error
+L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "NONE")  # Options: "NONE" (FP32), "INT8", "INT16"
 
 # Note when NN related parameters are optimized, use real games as positional understanding will be reflected.
 # The non-NN parameters are primarily about tactics, and they can be quickly tuned using test positions.
