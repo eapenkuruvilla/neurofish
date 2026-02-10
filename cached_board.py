@@ -18,7 +18,7 @@ try:
     import libs.chess_cpp as chess_cpp
 
     HAS_CPP_BACKEND = True
-    print("✓ Using fast C++ chess backend (chess_cpp)", file=sys.stderr)
+    print("âœ“ Using fast C++ chess backend (chess_cpp)", file=sys.stderr)
 except ImportError:
     HAS_CPP_BACKEND = False
     print("! C++ backend not available, using python-chess (slower)")
@@ -196,6 +196,47 @@ def int_to_move(key: int) -> chess.Move:
     return chess.Move(from_sq, to_sq, promo if promo else None)
 
 
+def int_to_cpp_move_direct(move_int: int, is_castling: bool = False):
+    """Convert move_int directly to C++ move format without creating chess.Move.
+
+    OPTIMIZATION: Avoids chess.Move object creation in the hot path.
+
+    Handles castling conversion from python-chess convention to C++ convention:
+    - Python-chess: king moves to g1/c1/g8/c8
+    - C++: king moves to h1/a1/h8/a8 (rook square)
+
+    Args:
+        move_int: Integer move representation (from_sq | to_sq<<6 | promo<<12)
+        is_castling: Whether this is a castling move (affects to_sq conversion)
+
+    Returns:
+        C++ Move object, or chess.Move if no C++ backend
+    """
+    from_sq = move_int & 0x3F
+    to_sq = (move_int >> 6) & 0x3F
+    promo = (move_int >> 12) & 0xF
+
+    if not HAS_CPP_BACKEND:
+        return chess.Move(from_sq, to_sq, promo if promo else None)
+
+    # Handle castling conversion (python-chess -> C++ convention)
+    if is_castling and promo == 0:
+        # White castling (E1 = 4)
+        if from_sq == 4:  # chess.E1
+            if to_sq == 6:  # chess.G1 (kingside) -> H1
+                to_sq = 7
+            elif to_sq == 2:  # chess.C1 (queenside) -> A1
+                to_sq = 0
+        # Black castling (E8 = 60)
+        elif from_sq == 60:  # chess.E8
+            if to_sq == 62:  # chess.G8 (kingside) -> H8
+                to_sq = 63
+            elif to_sq == 58:  # chess.C8 (queenside) -> A8
+                to_sq = 56
+
+    return chess_cpp.Move(from_sq, to_sq, promo)
+
+
 class MoveAdapter:
     """OPTIMIZED: Adapter with move caching to reduce object creation."""
 
@@ -334,10 +375,7 @@ class CachedBoard:
     def _get_pooled_cache(cls) -> _CacheState:
         """Get a _CacheState from pool or create new one."""
         if cls._cache_pool:
-            try:
-                cache = cls._cache_pool.pop()
-            except IndexError:
-                return _CacheState()
+            cache = cls._cache_pool.pop()
             # Reset all fields to None (faster than creating new object)
             cache.zobrist_hash = None
             cache.legal_moves = None
@@ -548,6 +586,85 @@ class CachedBoard:
         self._cache_stack.append(self._get_pooled_cache())
         # OPTIMIZATION: Defer hash computation until actually needed
         # Store None as placeholder - will be computed lazily in is_repetition or zobrist_hash
+        self._hash_history.append(None)
+
+    def push_int(self, move_int: int, is_en_passant: bool, is_castling: bool,
+                 captured_piece_type, captured_piece_color) -> None:
+        """
+        OPTIMIZED: Push move using integer representation only.
+
+        This eliminates chess.Move object creation from the hot path when using
+        the C++ backend. The C++ push is done directly from integers.
+
+        Args:
+            move_int: Integer representation of the move (from_sq | to_sq<<6 | promo<<12)
+            is_en_passant: Whether this move is en passant
+            is_castling: Whether this move is castling
+            captured_piece_type: Type of captured piece (1-6) or None
+            captured_piece_color: Color of captured piece (True=WHITE) or None
+        """
+        from_sq = move_int & 0x3F
+        to_sq = (move_int >> 6) & 0x3F
+        promo = (move_int >> 12) & 0xF
+
+        is_null_move = (from_sq == 0 and to_sq == 0 and promo == 0)
+
+        # Build captured_piece for _MoveInfo compatibility
+        captured_piece = None
+        if captured_piece_type is not None and captured_piece_color is not None:
+            captured_piece = chess.Piece(captured_piece_type, captured_piece_color)
+
+        if is_null_move:
+            # Null move handling (rare case, OK to create chess.Move)
+            move = chess.Move(from_sq, to_sq, None)
+            move_info = _MoveInfo(
+                move=move,
+                previous_castling_rights=self.castling_rights,
+                previous_ep_square=self.ep_square,
+            )
+
+            if self._use_cpp:
+                parts = self._board.fen().split(' ')
+                parts[1] = 'b' if parts[1] == 'w' else 'w'
+                parts[3] = '-'
+                self._board.set_fen(' '.join(parts))
+                self._py_board_dirty = True
+                self._cpp_stack_dirty = True
+            else:
+                self._board.push(move)
+        else:
+            if self._use_cpp:
+                if self._cpp_stack_dirty:
+                    # Slow path: need to replay via FEN (rare)
+                    move = int_to_move(move_int)
+                    temp_board = chess.Board(self._board.fen())
+                    temp_board.push(move)
+                    self._board.set_fen(temp_board.fen())
+                else:
+                    # FAST PATH: Direct C++ push without chess.Move object
+                    cpp_move = int_to_cpp_move_direct(move_int, is_castling=is_castling)
+                    self._board.push(cpp_move)
+                self._py_board_dirty = True
+
+                # Create move for _MoveInfo (needed for pop compatibility)
+                move = int_to_move(move_int)
+            else:
+                # Python-chess backend - need chess.Move
+                move = int_to_move(move_int)
+                self._board.push(move)
+
+            move_info = _MoveInfo(
+                move=move,
+                captured_piece=captured_piece,
+                was_en_passant=is_en_passant,
+                was_castling=is_castling,
+                previous_castling_rights=self.castling_rights,
+                previous_ep_square=self.ep_square,
+            )
+
+        self._move_stack.append(move)
+        self._move_info_stack.append(move_info)
+        self._cache_stack.append(self._get_pooled_cache())
         self._hash_history.append(None)
 
     def pop(self) -> chess.Move:
@@ -786,7 +903,7 @@ class CachedBoard:
         OPTIMIZATION: Return legal moves as integers.
 
         Also computes gives_check during generation to avoid
-        redundant int→C++ move conversion in precompute_move_info_int.
+        redundant intâ†’C++ move conversion in precompute_move_info_int.
 
         This avoids chess.Move object creation, providing significant speedup:
         - No object allocation (~56 bytes saved per move)
@@ -803,7 +920,7 @@ class CachedBoard:
         if cache.legal_moves_int is None:
             if self._use_cpp:
                 # Compute gives_check while we have C++ moves
-                # This avoids redundant int→C++ conversion later
+                # This avoids redundant intâ†’C++ conversion later
                 cpp_moves = self._board.legal_moves()
                 result = []
                 gives_check_cache = {}

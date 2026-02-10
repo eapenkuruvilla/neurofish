@@ -35,7 +35,7 @@ def set_debug_mode(enabled: bool):
 
 
 # ======================================================================
-# Shared state (module globals) — intentionally shared across threads
+# Shared state (module globals) â€” intentionally shared across threads
 # ======================================================================
 
 class TimeControl:
@@ -70,11 +70,11 @@ HISTORY_TABLE_SIZE = 25000
 
 
 # ======================================================================
-# Search generation — plain int, only main thread writes, workers read
+# Search generation â€” plain int, only main thread writes, workers read
 # ======================================================================
 
 class _SearchControl:
-    """Lightweight stop signaling for Lazy SMP. No locks needed —
+    """Lightweight stop signaling for Lazy SMP. No locks needed â€”
     only the main thread writes, workers only read."""
     generation = 1
 
@@ -173,9 +173,11 @@ def push_move(board: CachedBoard, move, evaluator: NNEvaluator):
 
 
 def push_move_int(board: CachedBoard, move_int: int, evaluator: NNEvaluator):
-    """Push integer move on both evaluator and board."""
-    move = int_to_move(move_int)
-    evaluator.push_with_board(board, move)
+    """Push integer move on both evaluator and board.
+
+    OPTIMIZED: Uses integer-only path to avoid chess.Move object creation.
+    """
+    evaluator.push_with_board_int_only(board, move_int)
 
 
 def see(board: CachedBoard, move: chess.Move) -> int:
@@ -382,7 +384,7 @@ def _make_qs_stats():
 
 
 # ======================================================================
-# ChessEngine class — per-instance state, no thread-local hacks
+# ChessEngine class â€” per-instance state, no thread-local hacks
 # ======================================================================
 
 class ChessEngine:
@@ -394,7 +396,7 @@ class ChessEngine:
     soft_stop flag, and NN evaluator reference.
 
     Shared state (TT, nn_eval_cache, game_position_history, TimeControl)
-    remains at module level — this is intentional for Lazy SMP communication.
+    remains at module level â€” this is intentional for Lazy SMP communication.
     """
 
     def __init__(self, nn_eval: Optional[NNEvaluator] = None,
@@ -420,7 +422,7 @@ class ChessEngine:
         # Per-instance stop flag
         self.soft_stop = False
 
-        # NN evaluator (per-instance — each thread needs its own incremental state)
+        # NN evaluator (per-instance â€” each thread needs its own incremental state)
         self.nn_evaluator = nn_eval if nn_eval is not None else nn_evaluator
 
         # Lazy SMP stop signaling
@@ -432,7 +434,7 @@ class ChessEngine:
         self._rng = random.Random()
         # Per-instance random for evaluation noise (Lazy SMP diversity)
         self._eval_rng = random.Random()
-        self._eval_noise = 5  # ±5 centipawns noise range
+        self._eval_noise = 5  # Â±5 centipawns noise range
 
     def reset_for_search(self):
         """Reset per-search state. Call before each new search."""
@@ -442,7 +444,7 @@ class ChessEngine:
         self.soft_stop = False
         self.completed_depth = 0
         self._qs_stats = _make_qs_stats()
-        # Don't reset kpi or _diag — they accumulate across searches for reporting
+        # Don't reset kpi or _diag â€” they accumulate across searches for reporting
 
     def reset_kpi(self):
         """Reset KPI counters."""
@@ -464,7 +466,7 @@ class ChessEngine:
         """Set evaluation noise for search diversity.
 
         Args:
-            noise_range: Max noise in centipawns (e.g., 5 means ±5cp)
+            noise_range: Max noise in centipawns (e.g., 5 means Â±5cp)
             seed: Random seed. Different workers should use different seeds.
         """
         self._eval_noise = noise_range
@@ -797,11 +799,13 @@ class ChessEngine:
             if is_check:
                 is_capture_move = board.is_capture_int(move_int)
 
-            move = int_to_move(move_int)
             should_update_nn = q_depth <= config.QS_DEPTH_MAX_NN_EVAL
             if should_update_nn:
-                push_move(board, move, self.nn_evaluator)
+                # OPTIMIZED: Use integer-only push path
+                push_move_int(board, move_int, self.nn_evaluator)
             else:
+                # Deep QS: still need chess.Move for board.push
+                move = int_to_move(move_int)
                 board.push(move)
 
             child_capture_sq = to_sq if is_capture_move else -1
@@ -877,10 +881,7 @@ class ChessEngine:
         max_eval = -config.MAX_SCORE
 
         # TT Lookup
-        try:
-            entry = transposition_table.get(key)
-        except (KeyError, RuntimeError):
-            entry = None
+        entry = transposition_table.get(key)
         tt_move_int = 0
         if entry and entry.depth >= depth:
             self.kpi['tt_hits'] += 1
@@ -957,8 +958,8 @@ class ChessEngine:
                     continue
                 if move_count >= 3:
                     break
-                move = int_to_move(move_int)
-                push_move(board, move, self.nn_evaluator)
+                # OPTIMIZED: Use integer-only push path
+                push_move_int(board, move_int, self.nn_evaluator)
                 score, _ = self.negamax(board, reduced_depth, -reduced_beta - 1, -reduced_beta,
                                         allow_singular=False)
                 score = -score
@@ -1029,8 +1030,8 @@ class ChessEngine:
                     self.kpi['futility_prunes'] += 1
                     continue
 
-            move = int_to_move(move_int)
-            push_move(board, move, self.nn_evaluator)
+            # OPTIMIZED: Use integer-only push path
+            push_move_int(board, move_int, self.nn_evaluator)
             child_in_check = board.is_check()
 
             # Extensions
@@ -1118,17 +1119,14 @@ class ChessEngine:
         else:
             flag = TT_EXACT
 
-        try:
-            old = transposition_table.get(key)
-            if old is None or depth >= old.depth:
-                transposition_table[key] = TTEntry(depth, max_eval, flag, best_move_int)
-        except (RuntimeError, TypeError):
-            pass  # Race - skip store
+        old = transposition_table.get(key)
+        if old is None or depth >= old.depth:
+            transposition_table[key] = TTEntry(depth, max_eval, flag, best_move_int)
 
         return max_eval, best_pv
 
     # ------------------------------------------------------------------
-    # find_best_move — the main iterative deepening entry point
+    # find_best_move â€” the main iterative deepening entry point
     # ------------------------------------------------------------------
 
     def find_best_move(self, fen: str, max_depth: int = config.MAX_NEGAMAX_DEPTH,
@@ -1154,7 +1152,7 @@ class ChessEngine:
 
         Returns:
             Tuple of (best_move_int, score, pv_int, nodes, nps)
-            Returns ints — caller converts to chess.Move if needed.
+            Returns ints â€” caller converts to chess.Move if needed.
         """
         # Initialize time control
         if not use_existing_time_control:
@@ -1346,8 +1344,8 @@ class ChessEngine:
                         search_aborted = True
                         break
 
-                    move = int_to_move(move_int)
-                    push_move(board, move, self.nn_evaluator)
+                    # OPTIMIZED: Use integer-only push path
+                    push_move_int(board, move_int, self.nn_evaluator)
 
                     if is_draw_by_repetition(board):
                         score = get_draw_score(board)
@@ -1438,8 +1436,8 @@ class ChessEngine:
                             search_aborted = True
                             break
 
-                        move = int_to_move(move_int)
-                        push_move(board, move, self.nn_evaluator)
+                        # OPTIMIZED: Use integer-only push path
+                        push_move_int(board, move_int, self.nn_evaluator)
                         score, child_pv = self.negamax(board, depth - 1, -beta, -alpha,
                                                        allow_singular=True)
                         score = -score
@@ -1502,7 +1500,7 @@ class ChessEngine:
                 # Callback: report intermediate result
                 if on_depth_complete:
                     on_depth_complete(depth, best_move_int, best_score, best_pv,
-                                     self.kpi['nodes'] - nodes_start)
+                                      self.kpi['nodes'] - nodes_start)
 
             if search_aborted:
                 break
@@ -1734,7 +1732,7 @@ def main():
             engine.reset_kpi()
             start_time = time.perf_counter()
             bm_int, score, pv_int, nodes, nps_val = engine.find_best_move(fen, max_depth=20,
-                                                                           time_limit=5)
+                                                                          time_limit=5)
             end_time = time.perf_counter()
 
             elapsed_time = end_time - start_time
