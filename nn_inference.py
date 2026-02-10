@@ -39,7 +39,7 @@ try:
         get_dnn_feature_index as _cy_get_dnn_feature_index,
     )
     HAS_CYTHON = True
-    print("✓ Using Cython-accelerated NN operations", file=sys.stderr)
+    print("âœ“ Using Cython-accelerated NN operations", file=sys.stderr)
 except ImportError as e:
     from nn_ops_fallback import (
         dnn_evaluate_incremental as _cy_dnn_eval,
@@ -101,7 +101,7 @@ _PIECE_INDEX_TABLE = np.array([
 # This gives: P=0, N=1, B=2, R=3, Q=4, K=5
 #
 # DNN encoding (768 features):
-#   - 12 planes × 64 squares
+#   - 12 planes Ã— 64 squares
 #   - Planes 0-5: STM pieces [P, N, B, R, Q, K], Planes 6-11: Opponent pieces
 #   - Feature index = piece_idx * 64 + square
 #
@@ -176,7 +176,7 @@ class DNNFeatures:
     Handles feature extraction for DNN network (768-dimensional one-hot encoding).
 
     Encoding scheme:
-    - 12 planes × 64 squares = 768 features
+    - 12 planes Ã— 64 squares = 768 features
     - Planes 0-5: STM (side-to-move) pieces [P, N, B, R, Q, K]
     - Planes 6-11: Opponent pieces [P, N, B, R, Q, K]
     - Piece order matches NNUE (piece_type - 1): P=0, N=1, B=2, R=3, Q=4, K=5
@@ -848,6 +848,10 @@ class NNUEInference:
         self._dirty_depth = 0
 
     def evaluate_full(self, white_features: List[int], black_features: List[int], stm: bool) -> float:
+        """Full evaluation from features (no incremental state).
+
+        Respects L1_QUANTIZATION setting to use same code path as evaluate_incremental().
+        """
         white_input = np.zeros(self.ft_weight.shape[1], dtype=np.float32)
         black_input = np.zeros(self.ft_weight.shape[1], dtype=np.float32)
 
@@ -866,7 +870,26 @@ class NNUEInference:
         else:
             hidden = np.concatenate([black_hidden, white_hidden])
 
-        x = np.clip(np.dot(hidden, self.l1_weight.T) + self.l1_bias, 0, 1)
+        # L1: Use quantization if enabled (must match evaluate_incremental)
+        if self._quantization_mode == "INT8":
+            # Quantize input: [0, 1] -> [0, 127]
+            hidden_q = np.clip(np.round(hidden * 127.0), 0, 127).astype(np.int8)
+            # INT32 accumulation
+            result_q = np.dot(hidden_q.astype(np.int32), self._l1_weight_q.T.astype(np.int32))
+            # Dequantize and add bias
+            x = np.clip(result_q.astype(np.float32) * self._l1_combined_scale + self.l1_bias, 0, 1)
+        elif self._quantization_mode == "INT16":
+            # Quantize input: [0, 1] -> [0, 32767]
+            hidden_q = np.clip(np.round(hidden * 32767.0), 0, 32767).astype(np.int16)
+            # INT64 accumulation (prevents overflow: 512 * 32767 * 32767 > INT32_MAX)
+            result_q = np.dot(hidden_q.astype(np.int64), self._l1_weight_q.T.astype(np.int64))
+            # Dequantize and add bias
+            x = np.clip(result_q.astype(np.float32) * self._l1_combined_scale + self.l1_bias, 0, 1)
+        else:
+            # FP32 path (original)
+            x = np.clip(np.dot(hidden, self.l1_weight.T) + self.l1_bias, 0, 1)
+
+        # L2, L3: Always FP32
         x = np.clip(np.dot(x, self.l2_weight.T) + self.l2_bias, 0, 1)
         output = np.dot(x, self.l3_weight.T) + self.l3_bias
 
@@ -1167,7 +1190,7 @@ def load_model(model_path: str, nn_type: str):
         else:
             inference = DNNInference(model)
 
-        print(f"✓ Model loaded successfully", file=sys.stderr)
+        print(f"âœ“ Model loaded successfully", file=sys.stderr)
         return inference
 
     except FileNotFoundError:

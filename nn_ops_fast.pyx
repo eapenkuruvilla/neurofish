@@ -1,4 +1,6 @@
-# cython: freethreading_compatible=True
+from Cython.Compiler import Options
+Options.freethreading_compatible = True
+
 # cython: language_level=3
 # cython: boundscheck=False
 # cython: wraparound=False
@@ -245,51 +247,28 @@ cpdef float nnue_evaluate_incremental(
 
 
 # =============================================================================
-# NNUE Evaluation with INT8 Quantized L1
+# NNUE Evaluation (INT8 Quantized)
 # =============================================================================
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
 cdef inline void _quantize_to_int8(
-    const DTYPE_t[::1] input_buf,
-    INT8_t[::1] output_buf,
-    Py_ssize_t size
+    const DTYPE_t[::1] src,
+    INT8_t[::1] dst,
+    Py_ssize_t n
 ) noexcept nogil:
-    """Quantize float32 [0,1] to int8 [0,127]."""
+    """Quantize [0,1] float to [0,127] int8."""
     cdef Py_ssize_t i
     cdef float val
-    cdef int q_val
 
-    for i in range(size):
-        val = input_buf[i]
-        q_val = <int>(val * 127.0 + 0.5)
-        if q_val < 0:
-            q_val = 0
-        elif q_val > 127:
-            q_val = 127
-        output_buf[i] = <INT8_t>q_val
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef inline void _quantize_to_int16(
-    const DTYPE_t[::1] input_buf,
-    INT16_t[::1] output_buf,
-    Py_ssize_t size
-) noexcept nogil:
-    """Quantize float32 [0,1] to int16 [0,16383] (14-bit for headroom)."""
-    cdef Py_ssize_t i
-    cdef float val
-    cdef int q_val
-
-    for i in range(size):
-        val = input_buf[i]
-        q_val = <int>(val * 16383.0 + 0.5)
-        if q_val < 0:
-            q_val = 0
-        elif q_val > 16383:
-            q_val = 16383
-        output_buf[i] = <INT16_t>q_val
+    for i in range(n):
+        val = src[i] * 127.0
+        if val < 0.0:
+            dst[i] = 0
+        elif val > 127.0:
+            dst[i] = 127
+        else:
+            dst[i] = <INT8_t>(val + 0.5)
 
 
 @cython.boundscheck(False)
@@ -305,53 +284,17 @@ cdef inline void _matmul_int8_dequant_crelu(
 ) noexcept nogil:
     """INT8 matmul with dequantization and fused clipped ReLU."""
     cdef Py_ssize_t i, j
-    cdef INT32_t acc
-    cdef float result
+    cdef INT32_t sum_q
+    cdef float sum_f
 
     for i in range(out_size):
-        acc = 0
+        sum_q = 0
         for j in range(in_size):
-            acc = acc + <INT32_t>input_q[j] * <INT32_t>weight_q[i, j]
+            sum_q = sum_q + <INT32_t>input_q[j] * <INT32_t>weight_q[i, j]
 
-        result = <float>acc * combined_scale + bias[i]
-
-        if result < 0.0:
-            output[i] = 0.0
-        elif result > 1.0:
-            output[i] = 1.0
-        else:
-            output[i] = result
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cdef inline void _matmul_int16_dequant_crelu(
-    const INT16_t[::1] input_q,
-    const INT16_t[:, ::1] weight_q,
-    const DTYPE_t[::1] bias,
-    DTYPE_t[::1] output,
-    float combined_scale,
-    Py_ssize_t out_size,
-    Py_ssize_t in_size
-) noexcept nogil:
-    """INT16 matmul with dequantization and fused clipped ReLU."""
-    cdef Py_ssize_t i, j
-    cdef INT64_t acc
-    cdef float result
-
-    for i in range(out_size):
-        acc = 0
-        for j in range(in_size):
-            acc = acc + <INT64_t>input_q[j] * <INT64_t>weight_q[i, j]
-
-        result = <float>acc * combined_scale + bias[i]
-
-        if result < 0.0:
-            output[i] = 0.0
-        elif result > 1.0:
-            output[i] = 1.0
-        else:
-            output[i] = result
+        # Dequantize + bias + clipped ReLU
+        sum_f = <float>sum_q * combined_scale + bias[i]
+        output[i] = 0.0 if sum_f < 0.0 else (1.0 if sum_f > 1.0 else sum_f)
 
 
 @cython.boundscheck(False)
@@ -414,6 +357,59 @@ cpdef float nnue_evaluate_incremental_int8(
         output = _matmul_bias_scalar(l2_buf, l3_weight, l3_bias, l2_size)
 
     return output
+
+
+# =============================================================================
+# NNUE Evaluation (INT16 Quantized)
+# =============================================================================
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline void _quantize_to_int16(
+    const DTYPE_t[::1] src,
+    INT16_t[::1] dst,
+    Py_ssize_t n
+) noexcept nogil:
+    """Quantize [0,1] float to [0,32767] int16."""
+    cdef Py_ssize_t i
+    cdef float val
+    # Explicitly define as float constant to avoid -ffast-math optimization issues
+    cdef float QUANT_SCALE = 32767.0
+
+    for i in range(n):
+        val = src[i] * QUANT_SCALE
+        if val < 0.0:
+            dst[i] = 0
+        elif val > 32767.0:
+            dst[i] = 32767
+        else:
+            dst[i] = <INT16_t>(val + 0.5)
+
+
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef inline void _matmul_int16_dequant_crelu(
+    const INT16_t[::1] input_q,
+    const INT16_t[:, ::1] weight_q,
+    const DTYPE_t[::1] bias,
+    DTYPE_t[::1] output,
+    float combined_scale,
+    Py_ssize_t out_size,
+    Py_ssize_t in_size
+) noexcept nogil:
+    """INT16 matmul with INT64 accumulation, dequantization, and fused clipped ReLU."""
+    cdef Py_ssize_t i, j
+    cdef INT64_t sum_q
+    cdef float sum_f
+
+    for i in range(out_size):
+        sum_q = 0
+        for j in range(in_size):
+            sum_q = sum_q + <INT64_t>input_q[j] * <INT64_t>weight_q[i, j]
+
+        # Dequantize + bias + clipped ReLU
+        sum_f = <float>sum_q * combined_scale + bias[i]
+        output[i] = 0.0 if sum_f < 0.0 else (1.0 if sum_f > 1.0 else sum_f)
 
 
 @cython.boundscheck(False)
