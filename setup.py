@@ -55,6 +55,7 @@ setup(
             "initializedcheck": False,
             "nonecheck": False,
             "overflowcheck": False,
+            "freethreading_compatible": True,  # Python 3.13+ free-threading support
             # Enable this to see what's being optimized
             # "annotation_typing": True,
         },

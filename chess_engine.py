@@ -877,7 +877,10 @@ class ChessEngine:
         max_eval = -config.MAX_SCORE
 
         # TT Lookup
-        entry = transposition_table.get(key)
+        try:
+            entry = transposition_table.get(key)
+        except (KeyError, RuntimeError):
+            entry = None
         tt_move_int = 0
         if entry and entry.depth >= depth:
             self.kpi['tt_hits'] += 1
@@ -1115,9 +1118,12 @@ class ChessEngine:
         else:
             flag = TT_EXACT
 
-        old = transposition_table.get(key)
-        if old is None or depth >= old.depth:
-            transposition_table[key] = TTEntry(depth, max_eval, flag, best_move_int)
+        try:
+            old = transposition_table.get(key)
+            if old is None or depth >= old.depth:
+                transposition_table[key] = TTEntry(depth, max_eval, flag, best_move_int)
+        except (RuntimeError, TypeError):
+            pass  # Race - skip store
 
         return max_eval, best_pv
 

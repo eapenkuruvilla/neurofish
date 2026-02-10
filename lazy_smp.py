@@ -66,7 +66,7 @@ def init_worker_pool(num_workers: int):
         current_pool_size = len(_nn_eval_pool)
         # We need (num_workers - 1) in pool because get_nn_evaluator_from_pool
         # creates one from global when pool is empty
-        needed = (num_workers - 1) - current_pool_size
+        needed = num_workers - current_pool_size
         if needed > 0:
             _mp_diag_print(f"Pre-populating NN evaluator pool with {needed} evaluators...")
             for _ in range(needed):
@@ -265,7 +265,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
 
     # Collect results
     best_result = None  # (move_int, score, pv, nodes, depth)
-    total_nodes = 0
+    worker_nodes = {}
     workers_reported = set()
 
     # Timing for MIN_DEPTH enforcement
@@ -328,7 +328,8 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
                 continue
 
             workers_reported.add(worker_id)
-            total_nodes = max(total_nodes, nodes)
+            worker_nodes[worker_id] = max(worker_nodes.get(worker_id, 0), nodes)
+            total_nodes = sum(worker_nodes.values())
 
             # Keep result from highest depth, or better score at same depth
             if best_result is None or depth > best_result[4]:
@@ -453,7 +454,7 @@ def main():
                 print("Type 'exit' or 'quit' to quit")
                 continue
 
-            move, score, pv, nodes, nps = parallel_find_best_move(fen, max_depth=20, time_limit=10)
+            move, score, pv, nodes, nps = parallel_find_best_move(fen, max_depth=20, time_limit=30)
 
             print(f"nodes: {nodes}")
             print(f"nps: {nps}")

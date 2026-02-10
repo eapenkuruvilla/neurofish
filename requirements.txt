@@ -1,7 +1,4 @@
-numpy
-torch
-zstandard
-cython
-chess
-tqdm
-psutil
+numpy 2.4.2
+torch 2.10.0
+cython 3.2.4
+chess 1.11.2

@@ -346,7 +346,8 @@ def build_cutechess_cmd(args, player_names: List[str],
 
     # Ã¢â€â‚¬Ã¢â€â‚¬ common engine settings Ã¢â€â‚¬Ã¢â€â‚¬
     each_args = ['proto=uci', f'tc={args.tc}', f'timemargin={args.timemargin}']
-    if args.threads is not None:
+    # Don't add Threads to -each if we're tuning Threads (per-engine values take precedence)
+    if args.threads is not None and param_name.upper() != 'THREADS':
         each_args.append(f'option.Threads={args.threads}')
     cmd += ['-each'] + each_args
 

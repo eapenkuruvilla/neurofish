@@ -334,7 +334,10 @@ class CachedBoard:
     def _get_pooled_cache(cls) -> _CacheState:
         """Get a _CacheState from pool or create new one."""
         if cls._cache_pool:
-            cache = cls._cache_pool.pop()
+            try:
+                cache = cls._cache_pool.pop()
+            except IndexError:
+                return _CacheState()
             # Reset all fields to None (faster than creating new object)
             cache.zobrist_hash = None
             cache.legal_moves = None

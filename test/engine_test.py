@@ -460,8 +460,8 @@ def run_engine_tests(test_suite, is_mp=False):
         with redirect_stdout(f):
             start_time = time.perf_counter()
             if is_mp:
-                mp_search.clear_shared_tables()
-                found_move, score, _, nodes, nps = mp_search.parallel_find_best_move(fen, max_depth=30,
+                lazy_smp.clear_shared_tables()
+                found_move, score, _, nodes, nps = lazy_smp.parallel_find_best_move(fen, max_depth=30,
                                                                                      time_limit=test_suite[3])
             else:
                 found_move, score, _, _, _ = find_best_move(fen, max_depth=30, time_limit=test_suite[3],
