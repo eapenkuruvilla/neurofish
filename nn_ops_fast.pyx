@@ -142,46 +142,6 @@ cdef inline float _matmul_bias_scalar(
 
 
 # =============================================================================
-# DNN Evaluation
-# =============================================================================
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cpdef float dnn_evaluate_incremental(
-    DTYPE_t[::1] accumulator,
-    DTYPE_t[:, ::1] l2_weight,
-    DTYPE_t[::1] l2_bias,
-    DTYPE_t[:, ::1] l3_weight,
-    DTYPE_t[::1] l3_bias,
-    DTYPE_t[:, ::1] l4_weight,
-    DTYPE_t[::1] l4_bias,
-    DTYPE_t[::1] l2_buf,
-    DTYPE_t[::1] l3_buf,
-    DTYPE_t[::1] acc_clipped
-) noexcept:
-    """Fast DNN incremental evaluation with fused operations."""
-    cdef Py_ssize_t acc_size = accumulator.shape[0]
-    cdef Py_ssize_t l2_size = l2_bias.shape[0]
-    cdef Py_ssize_t l3_size = l3_bias.shape[0]
-    cdef float output
-
-    with nogil:
-        # Clipped ReLU on accumulator
-        clipped_relu_copy(accumulator, acc_clipped)
-
-        # L2: fused matmul + bias + clipped_relu
-        _matmul_bias_crelu(acc_clipped, l2_weight, l2_bias, l2_buf, l2_size, acc_size)
-
-        # L3: fused matmul + bias + clipped_relu
-        _matmul_bias_crelu(l2_buf, l3_weight, l3_bias, l3_buf, l3_size, l2_size)
-
-        # L4: final output (no activation)
-        output = _matmul_bias_scalar(l3_buf, l4_weight, l4_bias, l3_size)
-
-    return output
-
-
-# =============================================================================
 # NNUE Evaluation (FP32)
 # =============================================================================
 
@@ -373,11 +333,9 @@ cdef inline void _quantize_to_int16(
     """Quantize [0,1] float to [0,32767] int16."""
     cdef Py_ssize_t i
     cdef float val
-    # Explicitly define as float constant to avoid -ffast-math optimization issues
-    cdef float QUANT_SCALE = 32767.0
 
     for i in range(n):
-        val = src[i] * QUANT_SCALE
+        val = src[i] * 32767.0
         if val < 0.0:
             dst[i] = 0
         elif val > 32767.0:
@@ -522,32 +480,6 @@ cpdef void accumulator_remove_features(
 
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cpdef void dnn_update_accumulator(
-    DTYPE_t[::1] accumulator,
-    DTYPE_t[:, ::1] weights,
-    object added_features,
-    object removed_features,
-    Py_ssize_t max_feature
-) noexcept:
-    """Update DNN accumulator with added/removed features."""
-    cdef Py_ssize_t j, f
-    cdef Py_ssize_t acc_size = accumulator.shape[0]
-    cdef list added_list, removed_list
-
-    added_list = [f for f in added_features if 0 <= f < max_feature]
-    removed_list = [f for f in removed_features if 0 <= f < max_feature]
-
-    for f in added_list:
-        for j in range(acc_size):
-            accumulator[j] = accumulator[j] + weights[j, f]
-
-    for f in removed_list:
-        for j in range(acc_size):
-            accumulator[j] = accumulator[j] - weights[j, f]
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
 cpdef void nnue_update_accumulator(
     DTYPE_t[::1] white_accumulator,
     DTYPE_t[::1] black_accumulator,
@@ -620,27 +552,6 @@ cpdef int flip_square(int square) noexcept nogil:
     cdef int rank = square // 8
     cdef int file = square % 8
     return (7 - rank) * 8 + file
-
-
-@cython.boundscheck(False)
-@cython.wraparound(False)
-cpdef int get_dnn_feature_index(
-    int square,
-    int piece_type,
-    bint is_friendly,
-    bint perspective
-) noexcept nogil:
-    """Calculate DNN feature index (768-dimensional encoding)."""
-    cdef int adj_square = square
-    cdef int type_idx, piece_idx
-
-    if not perspective:
-        adj_square = flip_square(square)
-
-    type_idx = piece_type - 1
-    piece_idx = type_idx + (0 if is_friendly else 6)
-
-    return piece_idx * 64 + adj_square
 
 
 @cython.boundscheck(False)

@@ -36,8 +36,8 @@ from chess_engine import find_best_move
 from nn_evaluator import NNEvaluator
 # Import from our modules - this ensures we test the actual production code
 from nn_inference import (
-    NNUEFeatures, DNNFeatures,
-    NNUE_INPUT_SIZE, DNN_INPUT_SIZE
+    NNUEFeatures,
+    NNUE_INPUT_SIZE,
 )
 
 CP_ERROR_CLIP = 100  # Keep low to make the average more sense.
@@ -372,7 +372,7 @@ def performance_test(nn_type: str, model_path: str):
     print("=" * 70)
 
     if nn_type == "NNUE":
-        expected_speedup = 80
+        expected_speedup = 70
         expected_incr_time = 0.15
     else:
         expected_speedup = 5

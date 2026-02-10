@@ -22,43 +22,19 @@ from torch import nn as nn
 
 from config import L1_QUANTIZATION
 
-# Try to import Cython-optimized operations
-try:
-    from libs.nn_ops_fast import (
-        dnn_evaluate_incremental as _cy_dnn_eval,
-        nnue_evaluate_incremental as _cy_nnue_eval,
-        nnue_evaluate_incremental_int8 as _cy_nnue_eval_int8,
-        nnue_evaluate_incremental_int16 as _cy_nnue_eval_int16,
-        dnn_update_accumulator as _cy_dnn_update,
-        nnue_update_accumulator as _cy_nnue_update,
-        clipped_relu_inplace,
-        clipped_relu_copy,
-        get_piece_index as _cy_get_piece_index,
-        get_nnue_feature_index as _cy_get_nnue_feature_index,
-        flip_square as _cy_flip_square,
-        get_dnn_feature_index as _cy_get_dnn_feature_index,
-    )
-    HAS_CYTHON = True
-    print("âœ“ Using Cython-accelerated NN operations", file=sys.stderr)
-except ImportError as e:
-    from nn_ops_fallback import (
-        dnn_evaluate_incremental as _cy_dnn_eval,
-        nnue_evaluate_incremental as _cy_nnue_eval,
-        nnue_evaluate_incremental_int8 as _cy_nnue_eval_int8,
-        nnue_evaluate_incremental_int16 as _cy_nnue_eval_int16,
-        dnn_update_accumulator as _cy_dnn_update,
-        nnue_update_accumulator as _cy_nnue_update,
-        clipped_relu_inplace,
-        clipped_relu_copy,
-        get_piece_index as _cy_get_piece_index,
-        get_nnue_feature_index as _cy_get_nnue_feature_index,
-        flip_square as _cy_flip_square,
-        get_dnn_feature_index as _cy_get_dnn_feature_index,
-    )
-    HAS_CYTHON = False
-    #print("! Cython not available, using pure Python fallback")
-    print(e)
-    print("\033[91m! Cython not available, using pure Python fallback\033[0m")
+# Import Cython-optimized operations (required - no fallback)
+from libs.nn_ops_fast import (
+    nnue_evaluate_incremental as _cy_nnue_eval,
+    nnue_evaluate_incremental_int8 as _cy_nnue_eval_int8,
+    nnue_evaluate_incremental_int16 as _cy_nnue_eval_int16,
+    nnue_update_accumulator as _cy_nnue_update,
+    clipped_relu_inplace,
+    clipped_relu_copy,
+    get_piece_index as _cy_get_piece_index,
+    get_nnue_feature_index as _cy_get_nnue_feature_index,
+    flip_square as _cy_flip_square,
+)
+print("✓ Using Cython-accelerated NN operations", file=sys.stderr)
 
 KING_SQUARES = 64
 PIECE_SQUARES = 64
@@ -66,8 +42,6 @@ PIECE_TYPES = 5  # P, N, B, R, Q (no King)
 COLORS = 2  # White, Black
 NNUE_INPUT_SIZE = KING_SQUARES * PIECE_SQUARES * PIECE_TYPES * COLORS
 NNUE_HIDDEN_SIZE = 256
-DNN_INPUT_SIZE = 768  # 64 squares * 6 piece types * 2 colors
-DNN_HIDDEN_LAYERS = [1024, 256, 32]
 OUTPUT_SIZE = 1
 
 # Pre-computed lookup tables
@@ -96,14 +70,9 @@ _PIECE_INDEX_TABLE = np.array([
     [-1, -1],  # KING: not in features
 ], dtype=np.int8)
 
-# Piece type mapping (shared by DNN and NNUE):
+# Piece type mapping:
 # Uses piece_type - 1 since chess.PAWN=1, chess.KNIGHT=2, chess.BISHOP=3, chess.ROOK=4, chess.QUEEN=5, chess.KING=6
 # This gives: P=0, N=1, B=2, R=3, Q=4, K=5
-#
-# DNN encoding (768 features):
-#   - 12 planes Ã— 64 squares
-#   - Planes 0-5: STM pieces [P, N, B, R, Q, K], Planes 6-11: Opponent pieces
-#   - Feature index = piece_idx * 64 + square
 #
 # NNUE encoding (40,960 features):
 #   - King excluded from piece features (only P, N, B, R, Q)
@@ -169,52 +138,6 @@ class NNUEFeatures:
         white_features = NNUEFeatures.extract_features(board, chess.WHITE)
         black_features = NNUEFeatures.extract_features(board, chess.BLACK)
         return white_features, black_features
-
-
-class DNNFeatures:
-    """
-    Handles feature extraction for DNN network (768-dimensional one-hot encoding).
-
-    Encoding scheme:
-    - 12 planes Ã— 64 squares = 768 features
-    - Planes 0-5: STM (side-to-move) pieces [P, N, B, R, Q, K]
-    - Planes 6-11: Opponent pieces [P, N, B, R, Q, K]
-    - Piece order matches NNUE (piece_type - 1): P=0, N=1, B=2, R=3, Q=4, K=5
-    - Board is flipped when Black to move (so STM always sees board from their perspective)
-    - Feature index = piece_idx * 64 + square
-    """
-
-    @staticmethod
-    def get_piece_index(piece_type: int, is_friendly_piece: bool) -> int:
-        """Get piece index (0-11) for the feature encoding.
-
-        Uses piece_type - 1 to match NNUE ordering: P=0, N=1, B=2, R=3, Q=4, K=5
-        """
-        type_idx = piece_type - 1  # chess.PAWN=1 -> 0, chess.KNIGHT=2 -> 1, etc.
-        return type_idx + (0 if is_friendly_piece else 6)
-
-    @staticmethod
-    def extract_features(board: CachedBoard, perspective: bool) -> List[int]:
-        features = []
-        for square in chess.SQUARES:
-            piece = board.piece_at(square)
-            if piece is None:
-                continue
-
-            adj_square = square
-            if not perspective:
-                adj_square = int(_FLIPPED_SQUARES[square])
-
-            is_friendly_piece = (piece.color == chess.WHITE) == perspective
-            piece_idx = (piece.piece_type - 1) + (0 if is_friendly_piece else 6)
-            feature_idx = piece_idx * 64 + adj_square
-            features.append(feature_idx)
-
-        return features
-
-    @staticmethod
-    def board_to_features(board: CachedBoard) -> List[int]:
-        return DNNFeatures.extract_features(board, board.turn == chess.WHITE)
 
 
 class NNUEIncrementalUpdater:
@@ -560,129 +483,6 @@ class NNUEIncrementalUpdater:
         return len(self.history_stack)
 
 
-class DNNIncrementalUpdater:
-    """Incrementally maintains DNN features for both perspectives with efficient undo support."""
-
-    def __init__(self, board: CachedBoard):
-        self.white_features: Set[int] = set(DNNFeatures.extract_features(board, chess.WHITE))
-        self.black_features: Set[int] = set(DNNFeatures.extract_features(board, chess.BLACK))
-        self.history_stack: List[Dict[str, Set[int]]] = []
-        self.last_change: Optional[Dict[str, Set[int]]] = None
-
-    @staticmethod
-    def _get_feature_for_perspective(perspective: bool, square: int,
-                                     piece_type: int, piece_color: bool) -> int:
-        """Get DNN feature index for a piece from a given perspective.
-
-        New encoding: feature_idx = piece_idx * 64 + oriented_square
-        Piece order: P=0, N=1, B=2, R=3, Q=4, K=5 (piece_type - 1)
-        """
-        if not perspective:
-            square = int(_FLIPPED_SQUARES[square])
-        is_friendly_piece = (piece_color == chess.WHITE) == perspective
-        # piece_type - 1 gives: PAWN=0, KNIGHT=1, BISHOP=2, ROOK=3, QUEEN=4, KING=5
-        piece_idx = (piece_type - 1) + (0 if is_friendly_piece else 6)
-        return piece_idx * 64 + square
-
-    def _remove_piece_features(self, square: int, piece_type: int, piece_color: bool,
-                               change_record: Dict[str, Set[int]]):
-        white_feat = self._get_feature_for_perspective(True, square, piece_type, piece_color)
-        if white_feat in self.white_features:
-            self.white_features.discard(white_feat)
-            change_record['white_removed'].add(white_feat)
-
-        black_feat = self._get_feature_for_perspective(False, square, piece_type, piece_color)
-        if black_feat in self.black_features:
-            self.black_features.discard(black_feat)
-            change_record['black_removed'].add(black_feat)
-
-    def _add_piece_features(self, square: int, piece_type: int, piece_color: bool,
-                            change_record: Dict[str, Set[int]]):
-        white_feat = self._get_feature_for_perspective(True, square, piece_type, piece_color)
-        if white_feat not in self.white_features:
-            self.white_features.add(white_feat)
-            change_record['white_added'].add(white_feat)
-
-        black_feat = self._get_feature_for_perspective(False, square, piece_type, piece_color)
-        if black_feat not in self.black_features:
-            self.black_features.add(black_feat)
-            change_record['black_added'].add(black_feat)
-
-    def push(self, board_before_push: CachedBoard, move: chess.Move):
-        from_sq = move.from_square
-        to_sq = move.to_square
-
-        change_record = {
-            'white_added': set(), 'white_removed': set(),
-            'black_added': set(), 'black_removed': set()
-        }
-
-        piece = board_before_push.piece_at(from_sq)
-        if piece is None:
-            self.history_stack.append(change_record)
-            self.last_change = change_record
-            return
-
-        moving_piece_type = piece.piece_type
-        moving_piece_color = piece.color
-
-        captured_piece = board_before_push.piece_at(to_sq)
-        is_en_passant = board_before_push.is_en_passant(move)
-
-        if is_en_passant:
-            ep_sq = to_sq + (-8 if moving_piece_color == chess.WHITE else 8)
-            captured_piece = board_before_push.piece_at(ep_sq)
-            if captured_piece:
-                self._remove_piece_features(ep_sq, captured_piece.piece_type,
-                                            captured_piece.color, change_record)
-
-        if captured_piece and not is_en_passant:
-            self._remove_piece_features(to_sq, captured_piece.piece_type,
-                                        captured_piece.color, change_record)
-
-        is_castling = board_before_push.is_castling(move)
-        rook_to = None
-        if is_castling:
-            if to_sq > from_sq:
-                rook_from = chess.H1 if moving_piece_color == chess.WHITE else chess.H8
-                rook_to = chess.F1 if moving_piece_color == chess.WHITE else chess.F8
-            else:
-                rook_from = chess.A1 if moving_piece_color == chess.WHITE else chess.A8
-                rook_to = chess.D1 if moving_piece_color == chess.WHITE else chess.D8
-            self._remove_piece_features(rook_from, chess.ROOK, moving_piece_color, change_record)
-
-        self._remove_piece_features(from_sq, moving_piece_type, moving_piece_color, change_record)
-
-        if move.promotion:
-            moving_piece_type = move.promotion
-
-        self._add_piece_features(to_sq, moving_piece_type, moving_piece_color, change_record)
-
-        if is_castling:
-            self._add_piece_features(rook_to, chess.ROOK, moving_piece_color, change_record)
-
-        self.history_stack.append(change_record)
-        self.last_change = change_record
-
-    def pop(self) -> Dict[str, Set[int]]:
-        if not self.history_stack:
-            raise ValueError("No moves to pop - history stack is empty")
-
-        change_record = self.history_stack.pop()
-        self.white_features -= change_record['white_added']
-        self.white_features |= change_record['white_removed']
-        self.black_features -= change_record['black_added']
-        self.black_features |= change_record['black_removed']
-        self.last_change = change_record
-        return change_record
-
-    def get_last_change(self) -> Optional[Dict[str, Set[int]]]:
-        return self.last_change
-
-    def get_features_both(self) -> Tuple[List[int], List[int]]:
-        return list(self.white_features), list(self.black_features)
-
-
 class NNUENetwork(nn.Module):
     """PyTorch NNUE Network"""
 
@@ -706,28 +506,6 @@ class NNUENetwork(nn.Module):
         x = torch.clamp(self.l1(hidden), 0, 1)
         x = torch.clamp(self.l2(x), 0, 1)
         x = self.l3(x)
-        return x
-
-
-class DNNNetwork(nn.Module):
-    """PyTorch DNN Network for chess position evaluation"""
-
-    def __init__(self, input_size=DNN_INPUT_SIZE, hidden_layers=None):
-        super(DNNNetwork, self).__init__()
-        if hidden_layers is None:
-            hidden_layers = DNN_HIDDEN_LAYERS
-        self.input_size = input_size
-        self.hidden_layers = hidden_layers
-        self.l1 = nn.Linear(input_size, hidden_layers[0])
-        self.l2 = nn.Linear(hidden_layers[0], hidden_layers[1])
-        self.l3 = nn.Linear(hidden_layers[1], hidden_layers[2])
-        self.l4 = nn.Linear(hidden_layers[2], 1)
-
-    def forward(self, features):
-        x = torch.clamp(self.l1(features), 0, 1)
-        x = torch.clamp(self.l2(x), 0, 1)
-        x = torch.clamp(self.l3(x), 0, 1)
-        x = self.l4(x)
         return x
 
 
@@ -848,10 +626,6 @@ class NNUEInference:
         self._dirty_depth = 0
 
     def evaluate_full(self, white_features: List[int], black_features: List[int], stm: bool) -> float:
-        """Full evaluation from features (no incremental state).
-
-        Respects L1_QUANTIZATION setting to use same code path as evaluate_incremental().
-        """
         white_input = np.zeros(self.ft_weight.shape[1], dtype=np.float32)
         black_input = np.zeros(self.ft_weight.shape[1], dtype=np.float32)
 
@@ -870,26 +644,7 @@ class NNUEInference:
         else:
             hidden = np.concatenate([black_hidden, white_hidden])
 
-        # L1: Use quantization if enabled (must match evaluate_incremental)
-        if self._quantization_mode == "INT8":
-            # Quantize input: [0, 1] -> [0, 127]
-            hidden_q = np.clip(np.round(hidden * 127.0), 0, 127).astype(np.int8)
-            # INT32 accumulation
-            result_q = np.dot(hidden_q.astype(np.int32), self._l1_weight_q.T.astype(np.int32))
-            # Dequantize and add bias
-            x = np.clip(result_q.astype(np.float32) * self._l1_combined_scale + self.l1_bias, 0, 1)
-        elif self._quantization_mode == "INT16":
-            # Quantize input: [0, 1] -> [0, 32767]
-            hidden_q = np.clip(np.round(hidden * 32767.0), 0, 32767).astype(np.int16)
-            # INT64 accumulation (prevents overflow: 512 * 32767 * 32767 > INT32_MAX)
-            result_q = np.dot(hidden_q.astype(np.int64), self._l1_weight_q.T.astype(np.int64))
-            # Dequantize and add bias
-            x = np.clip(result_q.astype(np.float32) * self._l1_combined_scale + self.l1_bias, 0, 1)
-        else:
-            # FP32 path (original)
-            x = np.clip(np.dot(hidden, self.l1_weight.T) + self.l1_bias, 0, 1)
-
-        # L2, L3: Always FP32
+        x = np.clip(np.dot(hidden, self.l1_weight.T) + self.l1_bias, 0, 1)
         x = np.clip(np.dot(x, self.l2_weight.T) + self.l2_bias, 0, 1)
         output = np.dot(x, self.l3_weight.T) + self.l3_bias
 
@@ -1040,135 +795,17 @@ class NNUEInference:
         return self.evaluate_full(white_feat, black_feat, board.turn == chess.WHITE)
 
 
-class DNNInference:
-    """
-    Numpy-based inference engine for DNN.
-    Uses Cython-accelerated operations when available.
-    """
-
-    def __init__(self, model: DNNNetwork):
-        model.eval()
-        with torch.no_grad():
-            self.l1_weight = model.l1.weight.cpu().numpy().astype(np.float32)
-            self.l1_bias = model.l1.bias.cpu().numpy().astype(np.float32)
-            self.l2_weight = model.l2.weight.cpu().numpy().astype(np.float32)
-            self.l2_bias = model.l2.bias.cpu().numpy().astype(np.float32)
-            self.l3_weight = model.l3.weight.cpu().numpy().astype(np.float32)
-            self.l3_bias = model.l3.bias.cpu().numpy().astype(np.float32)
-            self.l4_weight = model.l4.weight.cpu().numpy().astype(np.float32)
-            self.l4_bias = model.l4.bias.cpu().numpy().astype(np.float32)
-
-        self.white_accumulator = None
-        self.black_accumulator = None
-
-        # Pre-allocate all buffers
-        self._l2_buf = np.empty(self.l2_bias.shape[0], dtype=np.float32)
-        self._l3_buf = np.empty(self.l3_bias.shape[0], dtype=np.float32)
-        self._acc_clipped = np.empty(self.l1_bias.shape[0], dtype=np.float32)
-        self._max_feature_idx = self.l1_weight.shape[1]
-
-    def evaluate_full(self, features: List[int]) -> float:
-        feature_input = np.zeros(DNN_INPUT_SIZE, dtype=np.float32)
-
-        for f in features:
-            if 0 <= f < len(feature_input):
-                feature_input[f] = 1.0
-
-        x = np.clip(np.dot(feature_input, self.l1_weight.T) + self.l1_bias, 0, 1)
-        x = np.clip(np.dot(x, self.l2_weight.T) + self.l2_bias, 0, 1)
-        x = np.clip(np.dot(x, self.l3_weight.T) + self.l3_bias, 0, 1)
-        output = np.dot(x, self.l4_weight.T) + self.l4_bias
-
-        return output[0]
-
-    def evaluate_incremental(self, perspective: bool) -> float:
-        """Uses Cython-accelerated evaluation when available."""
-        if perspective:
-            if self.white_accumulator is None:
-                raise RuntimeError("White accumulator not initialized")
-            accumulator = self.white_accumulator
-        else:
-            if self.black_accumulator is None:
-                raise RuntimeError("Black accumulator not initialized")
-            accumulator = self.black_accumulator
-
-        return _cy_dnn_eval(
-            accumulator,
-            self.l2_weight,
-            self.l2_bias,
-            self.l3_weight,
-            self.l3_bias,
-            self.l4_weight,
-            self.l4_bias,
-            self._l2_buf,
-            self._l3_buf,
-            self._acc_clipped
-        )
-
-    def refresh_accumulator(self, features: List[int], perspective: bool):
-        """OPTIMIZATION: Use NumPy array operations.
-
-        Note: Despite type hints, features may be passed as sets - handle both.
-        """
-        accumulator = self.l1_bias.copy()
-
-        if features:
-            feat_list = list(features) if isinstance(features, set) else features
-            feat_arr = np.array(feat_list, dtype=np.int64)
-            valid_mask = (feat_arr >= 0) & (feat_arr < self._max_feature_idx)
-            valid_features = feat_arr[valid_mask]
-            if len(valid_features) > 0:
-                accumulator += self.l1_weight[:, valid_features].sum(axis=1)
-
-        if perspective:
-            self.white_accumulator = accumulator
-        else:
-            self.black_accumulator = accumulator
-
-    def update_accumulator(self, added_features: Set[int], removed_features: Set[int], perspective: bool):
-        """Uses Cython-accelerated update when available.
-
-        OPTIMIZATION: Skip empty set processing.
-        """
-        if perspective:
-            if self.white_accumulator is None:
-                raise RuntimeError("White accumulator not initialized")
-            accumulator = self.white_accumulator
-        else:
-            if self.black_accumulator is None:
-                raise RuntimeError("Black accumulator not initialized")
-            accumulator = self.black_accumulator
-
-        # Skip if both sets are empty
-        if not added_features and not removed_features:
-            return
-
-        _cy_dnn_update(
-            accumulator,
-            self.l1_weight,
-            added_features,
-            removed_features,
-            self._max_feature_idx
-        )
-
-    def evaluate_board(self, board: CachedBoard) -> float:
-        feat = DNNFeatures.board_to_features(board)
-        return self.evaluate_full(feat)
-
-
-def load_model(model_path: str, nn_type: str):
-    """Load trained model from checkpoint file"""
-    print(f"Loading {nn_type} model from {model_path}...", file=sys.stderr)
+def load_model(model_path: str, nn_type: str = "NNUE"):
+    """Load trained NNUE model from checkpoint file"""
+    print(f"Loading NNUE model from {model_path}...", file=sys.stderr)
 
     try:
         checkpoint = torch.load(model_path, map_location='cpu')
 
-        if nn_type == "NNUE":
-            model = NNUENetwork(NNUE_INPUT_SIZE, NNUE_HIDDEN_SIZE)
-        elif nn_type == "DNN":
-            model = DNNNetwork()
-        else:
-            raise ValueError(f"Unknown NN_TYPE: {nn_type}. Must be 'NNUE' or 'DNN'")
+        if nn_type != "NNUE":
+            raise ValueError(f"Unknown NN_TYPE: {nn_type}. Only 'NNUE' is supported.")
+
+        model = NNUENetwork(NNUE_INPUT_SIZE, NNUE_HIDDEN_SIZE)
 
         if isinstance(checkpoint, dict):
             if 'model_state_dict' in checkpoint:
@@ -1185,12 +822,9 @@ def load_model(model_path: str, nn_type: str):
         model.load_state_dict(state_dict)
         model.eval()
 
-        if nn_type == "NNUE":
-            inference = NNUEInference(model)
-        else:
-            inference = DNNInference(model)
+        inference = NNUEInference(model)
 
-        print(f"âœ“ Model loaded successfully", file=sys.stderr)
+        print(f"✓ Model loaded successfully", file=sys.stderr)
         return inference
 
     except FileNotFoundError:

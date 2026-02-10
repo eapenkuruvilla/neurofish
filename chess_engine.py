@@ -14,14 +14,12 @@ import random
 import config
 from cached_board import CachedBoard, move_to_int, int_to_move
 from config import configure_multi_core_blas
-from nn_evaluator import DNNEvaluator, NNUEEvaluator, NNEvaluator
+from nn_evaluator import NNUEEvaluator, NNEvaluator
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 HOME_DIR = "neurofish"
-DNN_MODEL_FILEPATH = SCRIPT_DIR / f"../{HOME_DIR}" / 'model' / 'dnn.pt'
 NNUE_MODEL_FILEPATH = SCRIPT_DIR / f"../{HOME_DIR}" / 'model' / 'nnue.pt'
-
-MODEL_PATH = str(DNN_MODEL_FILEPATH if config.NN_TYPE == "DNN" else NNUE_MODEL_FILEPATH)
+MODEL_PATH = str(NNUE_MODEL_FILEPATH)
 
 
 def is_debug_enabled() -> bool:
@@ -92,10 +90,7 @@ nn_evaluator: None | NNEvaluator = None
 
 def configure_nn_type():
     global nn_evaluator
-    if config.NN_TYPE == "DNN":
-        nn_evaluator = DNNEvaluator.create(CachedBoard(), config.NN_TYPE, MODEL_PATH)
-    else:
-        nn_evaluator = NNUEEvaluator.create(CachedBoard(), config.NN_TYPE, MODEL_PATH)
+    nn_evaluator = NNUEEvaluator.create(CachedBoard(), "NNUE", MODEL_PATH)
 
 
 configure_nn_type()
@@ -106,7 +101,7 @@ def get_nn_evaluator_from_pool() -> NNEvaluator:
     with _nn_eval_pool_lock:
         if _nn_eval_pool:
             return _nn_eval_pool.pop()
-    return NNEvaluator.create(CachedBoard(), config.NN_TYPE, MODEL_PATH)
+    return NNEvaluator.create(CachedBoard(), "NNUE", MODEL_PATH)
 
 
 def return_nn_evaluator_to_pool(evaluator: NNEvaluator):
@@ -173,11 +168,9 @@ def push_move(board: CachedBoard, move, evaluator: NNEvaluator):
 
 
 def push_move_int(board: CachedBoard, move_int: int, evaluator: NNEvaluator):
-    """Push integer move on both evaluator and board.
-
-    OPTIMIZED: Uses integer-only path to avoid chess.Move object creation.
-    """
-    evaluator.push_with_board_int_only(board, move_int)
+    """Push integer move on both evaluator and board."""
+    move = int_to_move(move_int)
+    evaluator.push_with_board(board, move)
 
 
 def see(board: CachedBoard, move: chess.Move) -> int:
@@ -720,18 +713,18 @@ class ChessEngine:
 
         # Stand-pat (not valid when in check)
         if not is_check:
-            is_dnn_eval = False
+            is_nn_eval = False
             if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MIN_NN_EVAL:
                 stand_pat = self.evaluate_nn(board)
-                is_dnn_eval = True
+                is_nn_eval = True
             else:
                 stand_pat = self.evaluate_classical(board)
 
-            if (not is_dnn_eval and config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL
+            if (not is_nn_eval and config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL
                     and abs(stand_pat) < config.STAND_PAT_MAX_NN_EVAL
                     and abs(stand_pat - beta) < config.QS_DELTA_MAX_NN_EVAL):
                 stand_pat = self.evaluate_nn(board)
-                is_dnn_eval = True
+                is_nn_eval = True
 
             if stand_pat >= beta:
                 self.kpi['beta_cutoffs'] += 1
@@ -740,7 +733,7 @@ class ChessEngine:
             if stand_pat + PIECE_VALUES[chess.QUEEN] < alpha:
                 return stand_pat, []
 
-            if (not is_dnn_eval and config.NN_ENABLED
+            if (not is_nn_eval and config.NN_ENABLED
                     and q_depth <= config.QS_DEPTH_MAX_NN_EVAL
                     and abs(stand_pat) < config.STAND_PAT_MAX_NN_EVAL
                     and (stand_pat > alpha or abs(stand_pat - alpha) < config.QS_DELTA_MAX_NN_EVAL)):
@@ -799,13 +792,11 @@ class ChessEngine:
             if is_check:
                 is_capture_move = board.is_capture_int(move_int)
 
+            move = int_to_move(move_int)
             should_update_nn = q_depth <= config.QS_DEPTH_MAX_NN_EVAL
             if should_update_nn:
-                # OPTIMIZED: Use integer-only push path
-                push_move_int(board, move_int, self.nn_evaluator)
+                push_move(board, move, self.nn_evaluator)
             else:
-                # Deep QS: still need chess.Move for board.push
-                move = int_to_move(move_int)
                 board.push(move)
 
             child_capture_sq = to_sq if is_capture_move else -1
@@ -958,8 +949,8 @@ class ChessEngine:
                     continue
                 if move_count >= 3:
                     break
-                # OPTIMIZED: Use integer-only push path
-                push_move_int(board, move_int, self.nn_evaluator)
+                move = int_to_move(move_int)
+                push_move(board, move, self.nn_evaluator)
                 score, _ = self.negamax(board, reduced_depth, -reduced_beta - 1, -reduced_beta,
                                         allow_singular=False)
                 score = -score
@@ -1030,8 +1021,8 @@ class ChessEngine:
                     self.kpi['futility_prunes'] += 1
                     continue
 
-            # OPTIMIZED: Use integer-only push path
-            push_move_int(board, move_int, self.nn_evaluator)
+            move = int_to_move(move_int)
+            push_move(board, move, self.nn_evaluator)
             child_in_check = board.is_check()
 
             # Extensions
@@ -1344,8 +1335,8 @@ class ChessEngine:
                         search_aborted = True
                         break
 
-                    # OPTIMIZED: Use integer-only push path
-                    push_move_int(board, move_int, self.nn_evaluator)
+                    move = int_to_move(move_int)
+                    push_move(board, move, self.nn_evaluator)
 
                     if is_draw_by_repetition(board):
                         score = get_draw_score(board)
@@ -1436,8 +1427,8 @@ class ChessEngine:
                             search_aborted = True
                             break
 
-                        # OPTIMIZED: Use integer-only push path
-                        push_move_int(board, move_int, self.nn_evaluator)
+                        move = int_to_move(move_int)
+                        push_move(board, move, self.nn_evaluator)
                         score, child_pv = self.negamax(board, depth - 1, -beta, -alpha,
                                                        allow_singular=True)
                         score = -score
@@ -1500,7 +1491,7 @@ class ChessEngine:
                 # Callback: report intermediate result
                 if on_depth_complete:
                     on_depth_complete(depth, best_move_int, best_score, best_pv,
-                                      self.kpi['nodes'] - nodes_start)
+                                     self.kpi['nodes'] - nodes_start)
 
             if search_aborted:
                 break
@@ -1732,7 +1723,7 @@ def main():
             engine.reset_kpi()
             start_time = time.perf_counter()
             bm_int, score, pv_int, nodes, nps_val = engine.find_best_move(fen, max_depth=20,
-                                                                          time_limit=5)
+                                                                           time_limit=5)
             end_time = time.perf_counter()
 
             elapsed_time = end_time - start_time
