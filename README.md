@@ -226,25 +226,25 @@ conda activate neurofish
 
 ### ELO Gains by Various Features
 
-| Type                             | ELO Change |
-|----------------------------------|------------|
-| C++ Board                        | +95        |
-| Cython acceleration              | +107       |
-| Quantization (INT8)              | +46        |
-| Quantization (INT16)             | -47        |
-| Pondering                        | +90        |
-| BLAS multi-core without Lazy SMP | +35        |
-| BLAS multi-core with Lazy SMP    | -176       |
+| Type                           | ELO Change |
+|--------------------------------|------------|
+| C++ Board                      | +95        |
+| Cython acceleration            | +107       |
+| Quantization (INT8)            | -89        |
+| Quantization (INT16)           | +95        |
+| Pondering                      | +90        |
+| BLAS multi-core, single thread | +0         |
 
 **Analysis:** The two largest gains come from reducing Python interpreter overhead: Cython-optimized NN operations (+107) and C++ move generation (+95) together contribute over 200 ELO, underscoring that raw execution speed is the dominant bottleneck in a Python chess engine. Faster evaluation and move generation translate directly into deeper search within the same time budget. INT8 quantization (+46) further accelerates NN inference by leveraging narrower integer arithmetic, while INT16 quantization (-47) regresses because its wider data types reduce SIMD throughput without a compensating improvement in evaluation accuracy. BLAS multi-core (+35) provides a modest gain by parallelizing the matrix operations within NN inference—this benefit is orthogonal to search-level parallelism and stacks with single-threaded optimizations.
 
 ### Lazy SMP Performance
 
-| Threads | ELO  (with GIL) |
-|---------|-----------------|
-| 1       | Baseline        |
-| 2       | -84             |
-| 3       | TBD             |
+| Threads        | ELO      |
+|----------------|----------|
+| 1              | Baseline |
+| 2 (with GIL)   | -84      |
+| 2 (without GIL) | TBD      |
+| 3 (without GIL) | TBD      |
 
 **Analysis:** Two threads yield a modest +14 ELO over single-threaded search, but scaling to four threads regresses by −27 ELO below the single-threaded baseline. This is a direct consequence of Python's Global Interpreter Lock (GIL): while NumPy and the NN inference layers release the GIL during heavy computation, the search logic itself—move ordering, alpha-beta recursion, transposition table lookups—runs under the GIL and becomes a contention bottleneck as thread count increases. At two threads the diversity benefit of Lazy SMP (workers exploring slightly different search trees and populating the shared transposition table) narrowly outweighs the GIL overhead, but at four threads the contention cost dominates. The optimal configuration for NeuroFish is therefore two threads; meaningful scaling beyond this would require moving the core search loop to C/C++ or to a GIL-free runtime.
 

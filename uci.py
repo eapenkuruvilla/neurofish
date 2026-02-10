@@ -84,7 +84,7 @@ def uci_loop():
             print(f"option name ResignThreshold type spin default {RESIGN_THRESHOLD} min -10000 max 0")
             print(f"option name ResignMoves type spin default {RESIGN_CONSECUTIVE_MOVES} min 1 max 10")
             print(f"option name Ponder type check default {'true' if config.PONDERING_ENABLED else 'false'}")
-            print(f"option name Threads type spin default {config.MAX_THREADS} min 1 max 64")
+            print(f"option name Threads type spin default {config.THREADS} min 1 max 64")
 
             print_uci_options()
 

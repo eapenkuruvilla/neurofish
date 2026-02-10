@@ -442,7 +442,7 @@ def run_engine_tests(test_suite, is_mp=False):
     print(f"time_limit={test_suite[3]}")
 
     if is_mp:
-        lazy_smp.set_lazy_smp_threads(config.MAX_THREADS)
+        lazy_smp.set_lazy_smp_threads(config.THREADS)
 
     for line in re.split(test_suite[1], test_suite[0])[:test_suite[2]]:
         tests_total += 1

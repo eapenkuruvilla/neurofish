@@ -486,7 +486,7 @@ Examples:
                      help="Games per pair (default: 30)")
     grp.add_argument("--tc", default="40/120+1",
                      help="Time control (default: 40/120+1)")
-    grp.add_argument("--threads", "-t", type=int, default=config.MAX_THREADS,
+    grp.add_argument("--threads", "-t", type=int, default=config.THREADS,
                      help="UCI Threads per engine instance")
     grp.add_argument("--book", "-b", default=f"{SCRIPT_DIR}/../book/komodo.bin",
                      help="Opening book (.epd, .pgn, or .bin)")

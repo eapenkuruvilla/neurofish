@@ -428,9 +428,6 @@ def stop_parallel_search():
 
 def set_lazy_smp_threads(threads: int):
     """Set number of threads and initialize pool."""
-    if threads > config.MAX_THREADS:
-        threads = config.MAX_THREADS
-
     if threads > 1:
         init_worker_pool(threads)
     else:
@@ -444,7 +441,7 @@ def is_mp_enabled() -> bool:
 
 def main():
     """Test function."""
-    set_lazy_smp_threads(config.MAX_THREADS)
+    set_lazy_smp_threads(config.THREADS)
     time.sleep(0.5)
 
     try:
