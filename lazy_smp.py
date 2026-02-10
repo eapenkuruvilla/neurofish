@@ -70,7 +70,7 @@ def init_worker_pool(num_workers: int):
         if needed > 0:
             _mp_diag_print(f"Pre-populating NN evaluator pool with {needed} evaluators...")
             for _ in range(needed):
-                evaluator = NNEvaluator.create(CachedBoard(), config.NN_TYPE, MODEL_PATH)
+                evaluator = NNEvaluator.create(CachedBoard(), "NNUE", MODEL_PATH)
                 _nn_eval_pool.append(evaluator)
             _mp_diag_print(f"NN evaluator pool size: {len(_nn_eval_pool)}")
 
