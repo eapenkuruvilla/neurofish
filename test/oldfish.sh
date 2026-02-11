@@ -6,19 +6,12 @@ set -euo pipefail
 # Argument validation.
 # ----------------------------
 
-if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <oldfish-elo> <games> [--debug|-debug]"
+if [[ $# -lt 1 ]]; then
+    echo "Usage: $0 <games> [--debug|-debug]"
     exit 1
 fi
 
-ELO="$1"
-GAMES="$2"
-
-# Validate numeric arguments
-if ! [[ "$ELO" =~ ^[0-9]+$ ]]; then
-    echo "Error: stockfish-elo must be a positive integer"
-    exit 1
-fi
+GAMES="$1"
 
 if ! [[ "$GAMES" =~ ^[0-9]+$ ]]; then
     echo "Error: games must be a positive integer"
@@ -57,7 +50,7 @@ python3 -c "import config"
 
 echo ""$CUTECHESS_PATH"/build/cutechess-cli \
 -engine cmd="$CMD_DIR"/../uci.sh name=neurofish ponder option.Threads="$THREADS" "$DEBUG_FLAG" \
--engine cmd="$CMD_DIR"/../../oldfish/uci.sh name=oldfish ponder option.Threads="$THREADS" "$DEBUG_FLAG" \
+-engine cmd="$CMD_DIR"/../../oldfish/uci.sh name=neurofish ponder option.Threads="$THREADS" "$DEBUG_FLAG" \
 -each proto=uci tc=40/120+1 timemargin=9999 \
 -draw movenumber=40 movecount=5 score=50 \
 -resign movecount=3 score=500 twosided=false \
