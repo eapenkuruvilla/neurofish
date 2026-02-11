@@ -58,7 +58,7 @@ PONDERING_ENABLED = _env_bool('PONDERING_ENABLED', True)
 # Multiprocessing configuration
 THREADS = _env_int('THREADS', 3)  # 1 or less disables multiprocessing, UCI option "Threads"
 
-LAZY_SMP_MOVE_ORDER_RANDOMNESS = _env_int('LAZY_SMP_MOVE_ORDER_RANDOMNESS', 5)  # ±N centipawns noise for move ordering diversity
+LAZY_SMP_MOVE_ORDER_RANDOMNESS = _env_int('LAZY_SMP_MOVE_ORDER_RANDOMNESS', 5)  # Â±N centipawns noise for move ordering diversity
 LAZY_SMP_DEPTH_OFFSET = _env_int('LAZY_SMP_DEPTH_OFFSET', 1)  # Stagger worker starting depths by this amount
 
 MULTI_CORE_BLAS = _env_bool('MULTI_CORE_BLAS', False)
@@ -77,7 +77,7 @@ STAND_PAT_MAX_NN_EVAL = _env_int('STAND_PAT_MAX_NN_EVAL',
                                  200)  # Absolute value of stand-pat, below it will trigger a NN evaluation.
 
 # Limit moves examined per QS ply to prevent explosion
-MAX_QS_DEPTH = _env_int('MAX_QS_DEPTH', 22)  # REDUCED from 15 to prevent search explosion
+MAX_QS_DEPTH = _env_int('MAX_QS_DEPTH', 18)  # Tighter cap to allow deeper soft-stop threshold
 _max_qs_moves_default = [12, 6, 4, 2]
 _max_q_moves_env = os.environ.get('MAX_QS_MOVES')
 if _max_q_moves_env:
@@ -95,14 +95,14 @@ if _max_q_moves_divisor_env:
 else:
     MAX_QS_MOVES_DIVISOR = _max_qs_moves_divisor_default
 
-QS_SOFT_STOP_DIVISOR = _env_float('QS_SOFT_STOP_DIVISOR', 9.0)
+QS_SOFT_STOP_DIVISOR = _env_float('QS_SOFT_STOP_DIVISOR', 4.5)  # Soft-stop at depth 4+ (18/4.5=4)
 QS_TIME_CRITICAL_FACTOR = _env_float('QS_TIME_CRITICAL_FACTOR', 0.86)
 MAX_QS_MOVES_TIME_CRITICAL = _env_int('MAX_QS_MOVES_TIME_CRITICAL', 5)
 DELTA_PRUNING_QS_MIN_DEPTH = _env_int('DELTA_PRUNING_QS_MIN_DEPTH', 5)
 DELTA_PRUNING_QS_MARGIN = _env_int('DELTA_PRUNING_QS_MARGIN', 75)
 CHECK_QS_MAX_DEPTH = _env_int('CHECK_QS_MAX_DEPTH', 5)
-QS_TIME_CHECK_INTERVAL = _env_int('QS_TIME_CHECK_INTERVAL', 40)
-QS_TIME_BUDGET_FRACTION = _env_float('QS_TIME_BUDGET_FRACTION', 0.35)
+QS_TIME_CHECK_INTERVAL = _env_int('QS_TIME_CHECK_INTERVAL', 80)  # Reduced overhead
+QS_TIME_BUDGET_FRACTION = _env_float('QS_TIME_BUDGET_FRACTION', 0.45)  # Allow 45% of time for QS
 QS_TT_SUPPORTED = _env_bool('QS_TT_SUPPORTED', False)
 
 # Minimum depth requirements

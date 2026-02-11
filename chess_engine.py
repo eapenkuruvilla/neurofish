@@ -36,7 +36,7 @@ def set_debug_mode(enabled: bool):
 
 
 # ======================================================================
-# Shared state (module globals) Ã¢â‚¬â€ intentionally shared across threads
+# Shared state (module globals) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â intentionally shared across threads
 # ======================================================================
 
 class TimeControl:
@@ -62,11 +62,11 @@ HISTORY_TABLE_SIZE = 25000
 
 
 # ======================================================================
-# Search generation Ã¢â‚¬â€ plain int, only main thread writes, workers read
+# Search generation ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â plain int, only main thread writes, workers read
 # ======================================================================
 
 class _SearchControl:
-    """Lightweight stop signaling for Lazy SMP. No locks needed Ã¢â‚¬â€
+    """Lightweight stop signaling for Lazy SMP. No locks needed ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
     only the main thread writes, workers only read."""
     generation = 1
 
@@ -359,7 +359,7 @@ def _make_qs_stats():
 
 
 # ======================================================================
-# ChessEngine class Ã¢â‚¬â€ per-instance state, no thread-local hacks
+# ChessEngine class ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â per-instance state, no thread-local hacks
 # ======================================================================
 
 class ChessEngine:
@@ -371,7 +371,7 @@ class ChessEngine:
     soft_stop flag, and NN evaluator reference.
 
     Shared state (TT, nn_eval_cache, game_position_history, TimeControl)
-    remains at module level Ã¢â‚¬â€ this is intentional for Lazy SMP communication.
+    remains at module level ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â this is intentional for Lazy SMP communication.
     """
 
     def __init__(self, nn_eval: Optional[NNEvaluator] = None,
@@ -399,7 +399,7 @@ class ChessEngine:
         # Per-instance stop flag
         self.soft_stop = False
 
-        # NN evaluator (per-instance Ã¢â‚¬â€ each thread needs its own incremental state)
+        # NN evaluator (per-instance ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â each thread needs its own incremental state)
         self.nn_evaluator = nn_eval if nn_eval is not None else nn_evaluator
 
         # Lazy SMP stop signaling
@@ -414,7 +414,9 @@ class ChessEngine:
         self._rng = random.Random()
         # Per-instance random for evaluation noise (Lazy SMP diversity)
         self._eval_rng = random.Random()
-        self._eval_noise = 5  # Ã‚Â±5 centipawns noise range
+        self._eval_noise = 5  # ±5 centipawns noise range
+        self._noise_table = None  # Pre-computed noise lookup table
+        self._move_order_salt = 0  # Worker-specific salt for deterministic move ordering
 
     def reset_for_search(self):
         """Reset per-search state. Call before each new search."""
@@ -424,7 +426,7 @@ class ChessEngine:
         self.soft_stop = False
         self.completed_depth = 0
         self._qs_stats = _make_qs_stats()
-        # Don't reset kpi or _diag Ã¢â‚¬â€ they accumulate across searches for reporting
+        # Don't reset kpi or _diag ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â they accumulate across searches for reporting
 
     def reset_kpi(self):
         """Reset KPI counters."""
@@ -441,23 +443,33 @@ class ChessEngine:
         so they explore different parts of the search tree.
         """
         self._rng.seed(seed)
+        self._move_order_salt = seed & 0xFFFF  # Worker-specific constant for tiebreaker
 
     def set_eval_noise(self, noise_range: int, seed: int = None):
         """Set evaluation noise for search diversity.
 
         Args:
-            noise_range: Max noise in centipawns (e.g., 5 means Ã‚Â±5cp)
+            noise_range: Max noise in centipawns (e.g., 5 means ±5cp)
             seed: Random seed. Different workers should use different seeds.
         """
         self._eval_noise = noise_range
         if seed is not None:
             self._eval_rng.seed(seed)
+            self._move_order_salt = seed & 0xFFFF  # Also set move order salt for diversity
+        # Pre-compute noise table (64K entries, covers 16 bits of hash)
+        if noise_range > 0:
+            self._noise_table = np.array(
+                [self._eval_rng.randint(-noise_range, noise_range) for _ in range(65536)],
+                dtype=np.int8
+            )
+        else:
+            self._noise_table = None
 
-    def _add_eval_noise(self, score: int) -> int:
-        """Add random noise to evaluation score."""
-        if self._eval_noise <= 0:
+    def _add_eval_noise(self, score: int, zobrist_hash: int) -> int:
+        """Add deterministic noise to evaluation score using pre-computed table."""
+        if self._noise_table is None:
             return score
-        return score + self._eval_rng.randint(-self._eval_noise, self._eval_noise)
+        return score + int(self._noise_table[zobrist_hash & 0xFFFF])
 
     # ------------------------------------------------------------------
     # Diagnostic helpers
@@ -531,7 +543,7 @@ class ChessEngine:
             else:
                 return 0
         self.kpi['pos_eval'] += 1
-        return self._add_eval_noise(board.material_evaluation_full())
+        return self._add_eval_noise(board.material_evaluation_full(), board.zobrist_hash())
 
     def evaluate_nn(self, board: CachedBoard, skip_game_over: bool = False) -> int:
         """Evaluate using neural network with cache."""
@@ -544,12 +556,12 @@ class ChessEngine:
         key = board.zobrist_hash()
         if key in nn_eval_cache:
             self.kpi['dec_hits'] += 1
-            return self._add_eval_noise(nn_eval_cache[key])
+            return self._add_eval_noise(nn_eval_cache[key], key)
 
         self.kpi['nn_evals'] += 1
         score = self.nn_evaluator.evaluate_centipawns(board)
         nn_eval_cache[key] = score
-        return self._add_eval_noise(score)
+        return self._add_eval_noise(score, key)
 
     # ------------------------------------------------------------------
     # Move ordering
@@ -582,13 +594,13 @@ class ChessEngine:
                           pv_move_int: int = 0, tt_move_int: int = 0) -> List[int]:
         """Return legal moves as integers, ordered by expected quality.
 
-        For Lazy SMP workers (worker_id > 0), adds random noise to move scores
+        For Lazy SMP workers (worker_id > 0), adds deterministic noise to move scores
         to create search diversity across threads. Worker 0 uses optimal ordering.
         """
         moves_int = board.get_legal_moves_int()
         board.precompute_move_info_int(moves_int)
 
-        # Determine if we should add randomness (only for non-primary workers)
+        # Determine if we should add noise (only for non-primary workers)
         noise_range = config.LAZY_SMP_MOVE_ORDER_RANDOMNESS if self._worker_id > 0 else 0
 
         scored_moves = []
@@ -599,9 +611,12 @@ class ChessEngine:
                 score = 900000
             else:
                 score = self.move_score_int(board, move_int, depth)
-                # Add score-based randomness for Lazy SMP diversity
+                # Add deterministic noise for Lazy SMP diversity (replaces RNG)
                 if noise_range > 0:
-                    score += self._rng.randint(-noise_range, noise_range)
+                    # Use hash of move XOR worker salt to get deterministic but varied noise
+                    noise_hash = ((move_int * 2654435761) ^ self._move_order_salt) & 0xFFFF
+                    noise = (noise_hash % (2 * noise_range + 1)) - noise_range
+                    score += noise
             scored_moves.append((score, move_int))
 
         scored_moves.sort(key=lambda tup: tup[0], reverse=True)
@@ -652,15 +667,20 @@ class ChessEngine:
         self._qs_stats["total_nodes"] += 1
         self._qs_stats["max_depth_reached"] = max(self._qs_stats["max_depth_reached"], q_depth)
 
-        # Check time periodically
+        # Check time periodically (inlined to avoid double perf_counter calls)
         if self._qs_stats["total_nodes"] % config.QS_TIME_CHECK_INTERVAL == 0:
-            self.check_time()
-            if TimeControl.time_limit and TimeControl.start_time:
-                elapsed = time.perf_counter() - TimeControl.start_time
+            if TimeControl.time_limit is not None:
+                current_time = time.perf_counter()
+                elapsed = current_time - TimeControl.start_time
+                if elapsed >= TimeControl.time_limit:
+                    self.soft_stop = True
                 if elapsed > TimeControl.time_limit * config.QS_TIME_BUDGET_FRACTION:
                     self.soft_stop = True
                     self._diag_warn("qs_budget_exceeded",
                                     f"QS exceeded {config.QS_TIME_BUDGET_FRACTION * 100:.0f}% time budget at depth {q_depth}")
+                if TimeControl.hard_stop_time and current_time >= TimeControl.hard_stop_time:
+                    TimeControl.stop_search = True
+                    self.soft_stop = True
 
         if TimeControl.time_limit and TimeControl.time_limit < 1.0:
             self.check_time()
@@ -1111,7 +1131,7 @@ class ChessEngine:
         return max_eval, best_pv
 
     # ------------------------------------------------------------------
-    # find_best_move Ã¢â‚¬â€ the main iterative deepening entry point
+    # find_best_move ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the main iterative deepening entry point
     # ------------------------------------------------------------------
 
     def find_best_move(self, fen: str, max_depth: int = config.MAX_NEGAMAX_DEPTH,
@@ -1138,7 +1158,7 @@ class ChessEngine:
 
         Returns:
             Tuple of (best_move_int, score, pv_int, nodes, nps)
-            Returns ints Ã¢â‚¬â€ returns integers for UCI conversion.
+            Returns ints ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â returns integers for UCI conversion.
         """
         # Initialize time control
         if not use_existing_time_control:

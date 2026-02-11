@@ -465,7 +465,7 @@ def main():
                 print("Type 'exit' or 'quit' to quit")
                 continue
 
-            move_int, score, pv_int, nodes, nps = parallel_find_best_move(fen, max_depth=20, time_limit=30)
+            move_int, score, pv_int, nodes, nps = parallel_find_best_move(fen, max_depth=20, time_limit=5)
 
             print(f"nodes: {nodes}")
             print(f"nps: {nps}")
