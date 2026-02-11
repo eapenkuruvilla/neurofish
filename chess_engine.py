@@ -378,7 +378,8 @@ class ChessEngine:
 
     def __init__(self, nn_eval: Optional[NNEvaluator] = None,
                  search_generation: Optional[object] = None,
-                 generation: int = 0):
+                 generation: int = 0,
+                 worker_id: int = 0):
         """
         Args:
             nn_eval: NN evaluator for this engine. If None, uses the global one
@@ -386,6 +387,7 @@ class ChessEngine:
             search_generation: Reference to _SearchControl for Lazy SMP stop
                                signaling. None for main thread.
             generation: This search's generation number (for Lazy SMP).
+            worker_id: Worker ID for Lazy SMP (0 = main/canonical worker).
         """
         # Per-instance heuristics
         self.killer_moves_int = [[0, 0] for _ in range(config.MAX_NEGAMAX_DEPTH + 1)]
@@ -405,6 +407,9 @@ class ChessEngine:
         # Lazy SMP stop signaling
         self._search_generation = search_generation  # Reference to _SearchControl
         self._generation = generation
+
+        # Lazy SMP worker identity (0 = main worker, uses optimal ordering)
+        self._worker_id = worker_id
 
         # Track highest completed depth (for result reporting)
         self.completed_depth = 0
@@ -577,9 +582,16 @@ class ChessEngine:
 
     def ordered_moves_int(self, board: CachedBoard, depth: int,
                           pv_move_int: int = 0, tt_move_int: int = 0) -> List[int]:
-        """Return legal moves as integers, ordered by expected quality."""
+        """Return legal moves as integers, ordered by expected quality.
+
+        For Lazy SMP workers (worker_id > 0), adds random noise to move scores
+        to create search diversity across threads. Worker 0 uses optimal ordering.
+        """
         moves_int = board.get_legal_moves_int()
         board.precompute_move_info_int(moves_int)
+
+        # Determine if we should add randomness (only for non-primary workers)
+        noise_range = config.LAZY_SMP_MOVE_ORDER_RANDOMNESS if self._worker_id > 0 else 0
 
         scored_moves = []
         for move_int in moves_int:
@@ -589,10 +601,12 @@ class ChessEngine:
                 score = 900000
             else:
                 score = self.move_score_int(board, move_int, depth)
+                # Add score-based randomness for Lazy SMP diversity
+                if noise_range > 0:
+                    score += self._rng.randint(-noise_range, noise_range)
             scored_moves.append((score, move_int))
 
-        # Use per-instance RNG for Lazy SMP diversity
-        scored_moves.sort(key=lambda tup: (tup[0], self._rng.random()), reverse=True)
+        scored_moves.sort(key=lambda tup: tup[0], reverse=True)
         return [move_int for _, move_int in scored_moves]
 
     def age_heuristic_history(self):
@@ -1108,7 +1122,8 @@ class ChessEngine:
                        expected_best_moves=None,
                        use_existing_time_control: bool = False,
                        on_depth_complete: Optional[Callable] = None,
-                       suppress_info: bool = False) -> Tuple[int, int, List[int], int, float]:
+                       suppress_info: bool = False,
+                       start_depth: int = 1) -> Tuple[int, int, List[int], int, float]:
         """
         Finds the best move using iterative deepening negamax.
 
@@ -1213,7 +1228,7 @@ class ChessEngine:
         is_tactical_position = False
         score_unstable = False
 
-        for depth in range(1, max_depth + 1):
+        for depth in range(start_depth, max_depth + 1):
             depth_start_time = time.perf_counter()
             self.check_time()
 

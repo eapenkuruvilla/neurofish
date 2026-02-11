@@ -98,13 +98,19 @@ def shutdown_worker_pool():
 
 
 def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
-                     result_queue: Queue, start_delay: float = 0.0):
+                     result_queue: Queue, expected_best_moves, start_delay: float = 0.0):
     """
     Lazy SMP worker thread.
 
     Each worker creates its own ChessEngine instance with isolated state,
     then calls engine.find_best_move() with a callback for intermediate
     result reporting.
+
+    Workers use staggered starting depths to reduce duplicate work:
+    - Worker 0: starts at depth 1 (canonical search)
+    - Worker 1: starts at depth 1 + LAZY_SMP_DEPTH_OFFSET
+    - Worker 2: starts at depth 1 + 2*LAZY_SMP_DEPTH_OFFSET
+    - etc.
     """
     from chess_engine import (ChessEngine, _SearchControl, TimeControl,
                               get_nn_evaluator_from_pool, return_nn_evaluator_to_pool)
@@ -119,17 +125,24 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
     # Get an NN evaluator from the pool (should be pre-populated now)
     nn_eval = get_nn_evaluator_from_pool()
 
-    # Create per-worker engine with isolated state
+    # Create per-worker engine with isolated state and worker_id for move ordering diversity
     engine = ChessEngine(
         nn_eval=nn_eval,
         search_generation=_SearchControl,
-        generation=generation
+        generation=generation,
+        worker_id=worker_id
     )
 
     # Set unique eval noise seed for search diversity
     eval_seed = worker_id * 100003 + generation * 1009
     engine.set_eval_noise(5, seed=eval_seed)
     _mp_diag_print(f"Worker {worker_id} eval noise seed: {eval_seed}")
+
+    # Staggered starting depth: worker 0 starts at 1, others start higher
+    start_depth = 1 + worker_id * config.LAZY_SMP_DEPTH_OFFSET
+    if start_depth > max_depth:
+        start_depth = 1  # Fallback if offset would exceed max_depth
+    _mp_diag_print(f"Worker {worker_id} starting at depth {start_depth}")
 
     # FIX #4: Track last reported depth to skip redundant callbacks
     last_reported_depth = 0
@@ -159,7 +172,9 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
         engine.find_best_move(
             fen,
             max_depth=max_depth,
+            start_depth=start_depth,
             clear_tt=False,
+            expected_best_moves= expected_best_moves,
             use_existing_time_control=True,
             on_depth_complete=on_depth_complete,
             suppress_info=True
@@ -174,7 +189,7 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
 
 
 def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[float] = None,
-                            clear_tt: bool = True,
+                            clear_tt: bool = True, expected_best_moves=None,
                             use_existing_time_control: bool = False) -> Tuple[int, int, List[int], int, float]:
     """
     Find best move using Lazy SMP parallel search.
@@ -188,7 +203,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     if not _pool_initialized or _num_workers <= 1:
         from chess_engine import find_best_move
         return find_best_move(fen, max_depth=max_depth, time_limit=time_limit,
-                              clear_tt=clear_tt,
+                              clear_tt=clear_tt, expected_best_moves=expected_best_moves,
                               use_existing_time_control=use_existing_time_control)
 
     from chess_engine import (_SearchControl, TimeControl, transposition_table,
@@ -218,7 +233,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     _SearchControl.generation = new_gen
     current_generation = new_gen
 
-    # Clear TT if requested (main thread only â€” before spawning workers)
+    # Clear TT if requested (main thread only Ã¢â‚¬â€ before spawning workers)
     if clear_tt:
         transposition_table.clear()
         qs_transposition_table.clear()
@@ -254,7 +269,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         start_delay = i * 0.01  # 10ms stagger per worker
         t = threading.Thread(
             target=_lazy_smp_worker,
-            args=(i, fen, max_depth, current_generation, _result_queue, start_delay),
+            args=(i, fen, max_depth, current_generation, _result_queue, expected_best_moves, start_delay),
             daemon=True
         )
         t.start()

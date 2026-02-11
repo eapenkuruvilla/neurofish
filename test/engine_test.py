@@ -7,7 +7,7 @@ import config
 import lazy_smp
 from config import print_overridden_config
 from cached_board import CachedBoard
-from chess_engine import find_best_move, TimeControl
+from chess_engine import find_best_move, TimeControl, nn_eval_cache, clear_game_history
 
 # https://www.chessprogramming.org/Test-Positions
 win_at_chess_positions = \
@@ -455,13 +455,16 @@ def run_engine_tests(test_suite, is_mp=False):
             expected_move_int = board.parse_san(best_move)
             expected_moves_int.append(expected_move_int)
 
+        nn_eval_cache.clear()
+        clear_game_history()  # Also resets diagnostic counters
+
         f = io.StringIO()
         with redirect_stdout(f):
             start_time = time.perf_counter()
             if is_mp:
-                lazy_smp.clear_shared_tables()
                 found_move_int, score, _, nodes, nps = lazy_smp.parallel_find_best_move(fen, max_depth=30,
-                                                                                     time_limit=test_suite[3])
+                                                                                     time_limit=test_suite[3],
+                                                                                        expected_best_moves=expected_moves_int)
             else:
                 found_move_int, score, _, _, _ = find_best_move(fen, max_depth=30, time_limit=test_suite[3],
                                                             expected_best_moves=expected_moves_int)
