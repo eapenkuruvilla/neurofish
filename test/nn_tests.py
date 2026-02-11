@@ -1,6 +1,6 @@
 """
 Chess Neural Network Evaluation Test Suite
-Tests trained NNUE or DNN models using the NNEvaluator abstraction.
+Tests trained NNUE models using the NNEvaluator abstraction.
 
 This test file reuses code from nn_evaluator.py to ensure bugs in the
 evaluator classes are caught by these tests.
@@ -30,7 +30,7 @@ import chess
 import chess.pgn
 import numpy as np
 
-from cached_board import CachedBoard
+from cached_board import CachedBoard, uci_to_int, int_to_uci, WHITE, BLACK
 from config import MAX_SCORE, TANH_SCALE
 from chess_engine import find_best_move
 from nn_evaluator import NNEvaluator
@@ -62,8 +62,8 @@ VALID_TEST_TYPES = {
 
 
 def get_model_path(nn_type: str) -> str:
-    """Get the model path for a given NN type."""
-    return "model/nnue.pt" if nn_type == "NNUE" else "model/dnn.pt"
+    """Get the model path for NNUE."""
+    return "model/nnue.pt"
 
 
 def output_to_centipawns(output: float) -> float:
@@ -72,14 +72,13 @@ def output_to_centipawns(output: float) -> float:
     return np.arctanh(output) * TANH_SCALE
 
 
-def evaluator_push(evaluator: NNEvaluator, board: CachedBoard, move: chess.Move):
+def evaluator_push(evaluator: NNEvaluator, board: CachedBoard, move_int: int):
     """
     Push a move to the evaluator and board using the unified interface.
 
-    This matches the pattern used in chess_engine.py's push_move() function.
-    The push_with_board() method handles both DNN and NNUE internally.
+    This matches the pattern used in chess_engine.py's push_move_int() function.
     """
-    evaluator.push_with_board(board, move)
+    evaluator.push_with_board(board, move_int)
 
 
 def evaluator_pop(evaluator: NNEvaluator, board: CachedBoard):
@@ -106,7 +105,7 @@ def evaluate_fen(fen: str, evaluator: NNEvaluator) -> dict:
         return {
             'success': True,
             'fen': fen,
-            'side_to_move': 'White' if board.turn == chess.WHITE else 'Black',
+            'side_to_move': 'White' if board.turn == WHITE else 'Black',
             'centipawns': centipawns
         }
     except ValueError as e:
@@ -118,7 +117,7 @@ def evaluate_fen(fen: str, evaluator: NNEvaluator) -> dict:
 def print_evaluation(result: dict):
     """Pretty print evaluation results."""
     if not result['success']:
-        print(f"❌ {result['error']}")
+        print(f"✗ {result['error']}")
         return
 
     print("─" * 60)
@@ -244,10 +243,10 @@ def test_accumulator_correctness(nn_type: str, model_path: str):
     move_count = 0
 
     for move_san in moves_san:
-        move = board.parse_san(move_san)
+        move_int = board.parse_san(move_san)
 
-        # Push using our helper that handles both DNN and NNUE
-        evaluator_push(evaluator, board, move)
+        # Push using our helper
+        evaluator_push(evaluator, board, move_int)
         move_count += 1
 
         # Use the evaluator's built-in validation
@@ -322,7 +321,7 @@ def performance_test(nn_type: str, model_path: str):
 
     board = CachedBoard()
     evaluator = NNEvaluator.create(board, nn_type, model_path)
-    move = chess.Move.from_uci("e2e4")
+    move_int = uci_to_int("e2e4")
 
     # Test 1: Full evaluation
     num_full_iters = 1000
@@ -344,7 +343,7 @@ def performance_test(nn_type: str, model_path: str):
 
     for _ in range(num_cycles):
         # Push
-        evaluator_push(evaluator, board, move)
+        evaluator_push(evaluator, board, move_int)
 
         # Evaluate (uses accumulator)
         _ = evaluator.evaluate_centipawns(board)
@@ -372,7 +371,7 @@ def performance_test(nn_type: str, model_path: str):
     print("=" * 70)
 
     if nn_type == "NNUE":
-        expected_speedup = 70
+        expected_speedup = 80
         expected_incr_time = 0.15
     else:
         expected_speedup = 5
@@ -404,11 +403,11 @@ def test_eval_accuracy(nn_type: str, model_path: str, positions_size: int = 1000
     print("=" * 70)
 
     # Find shard files
-    dnn_shards, nnue_shards = find_shards("data", nn_type)
-    shard_files = dnn_shards if nn_type.upper() == "DNN" else nnue_shards
+    _, nnue_shards = find_shards("data", nn_type)
+    shard_files = nnue_shards
 
     if not shard_files:
-        print(f"\n❌ ERROR: No shard files found for {nn_type}")
+        print(f"\n✗ ERROR: No shard files found for {nn_type}")
         print("Please ensure .bin.zst files exist in the data directory")
         return None
 
@@ -421,7 +420,7 @@ def test_eval_accuracy(nn_type: str, model_path: str, positions_size: int = 1000
     records = reader.read_diagnostic_records(shard_path, max_records=positions_size)
 
     if not records:
-        print("\n❌ ERROR: No diagnostic records found in shard file")
+        print("\n✗ ERROR: No diagnostic records found in shard file")
         print("Diagnostic records are written every 1000 positions and include FEN.")
         print("You may need to regenerate shards with the updated prepare_data.py")
         return None
@@ -449,11 +448,8 @@ def test_eval_accuracy(nn_type: str, model_path: str, positions_size: int = 1000
         try:
             fen = rec['fen']
 
-            # Evaluate using features from shard
-            if nn_type.upper() == "DNN":
-                pred_output = evaluator._evaluate_full(CachedBoard(fen))
-            else:  # NNUE
-                pred_output = evaluator._evaluate_full(CachedBoard(fen))
+            # Evaluate using NNUE
+            pred_output = evaluator._evaluate_full(CachedBoard(fen))
 
             true_tanh = np.tanh(rec['score_cp'] / TANH_SCALE)
 
@@ -471,14 +467,14 @@ def test_eval_accuracy(nn_type: str, model_path: str, positions_size: int = 1000
             errors.append((i, str(e)))
 
     if errors:
-        print(f"\n⚠ {len(errors)} positions failed to evaluate:")
+        print(f"\n✗ {len(errors)} positions failed to evaluate:")
         for idx, error in errors[:5]:
             print(f"  Position {idx}: {error[:60]}")
         if len(errors) > 5:
             print(f"  ... and {len(errors) - 5} more")
 
     if not true_tanh_values:
-        print("\n❌ ERROR: No positions could be evaluated")
+        print("\n✗ ERROR: No positions could be evaluated")
         return None
 
     # Compute metrics
@@ -597,7 +593,7 @@ def test_nn_vs_stockfish(nn_type: str, model_path: str, positions_size: int = 10
 
     # Check for pre-computed Stockfish evaluation file
     if not os.path.exists(SF_EVAL_FILE_PATH):
-        print(f"\n❌ ERROR: Pre-computed Stockfish evaluation file not found:")
+        print(f"\n✗ ERROR: Pre-computed Stockfish evaluation file not found:")
         print(f"    {SF_EVAL_FILE_PATH}")
         print("\nPlease generate it first by running:")
         print(f"    python build_sf_static_eval_file.py --num-positions {positions_size}")
@@ -670,14 +666,14 @@ def test_nn_vs_stockfish(nn_type: str, model_path: str, positions_size: int = 10
             errors.append((i, str(e)))
 
     if errors:
-        print(f"\n⚠ {len(errors)} positions failed:")
+        print(f"\n✗ {len(errors)} positions failed:")
         for idx, error in errors[:5]:
             print(f"  Position {idx}: {error[:60]}")
         if len(errors) > 5:
             print(f"  ... and {len(errors) - 5} more")
 
     if not sf_tanh_values:
-        print("\n❌ ERROR: No positions could be evaluated")
+        print("\n✗ ERROR: No positions could be evaluated")
         return None
 
     # Compute metrics
@@ -762,12 +758,8 @@ def test_feature_extraction(nn_type: str):
         ("8/P7/8/8/8/8/8/4K2k w - - 0 1", "Promotion possible"),
     ]
 
-    if nn_type == "NNUE":
-        max_features = NNUE_INPUT_SIZE
-        feature_extractor = NNUEFeatures
-    else:
-        max_features = DNN_INPUT_SIZE
-        feature_extractor = DNNFeatures
+    max_features = NNUE_INPUT_SIZE
+    feature_extractor = NNUEFeatures
 
     for fen, description in test_positions:
         print(f"\n{'─' * 70}")
@@ -776,33 +768,21 @@ def test_feature_extraction(nn_type: str):
 
         board = CachedBoard(fen)
 
-        if nn_type == "NNUE":
-            white_feat, black_feat = feature_extractor.board_to_features(board)
+        white_feat, black_feat = feature_extractor.board_to_features(board)
 
-            # Check white features
-            white_in_range = all(0 <= f < max_features for f in white_feat)
-            white_no_dups = len(white_feat) == len(set(white_feat))
+        # Check white features
+        white_in_range = all(0 <= f < max_features for f in white_feat)
+        white_no_dups = len(white_feat) == len(set(white_feat))
 
-            # Check black features
-            black_in_range = all(0 <= f < max_features for f in black_feat)
-            black_no_dups = len(black_feat) == len(set(black_feat))
+        # Check black features
+        black_in_range = all(0 <= f < max_features for f in black_feat)
+        black_no_dups = len(black_feat) == len(set(black_feat))
 
-            print(f"  White features: {len(white_feat)}, Black features: {len(black_feat)}")
-            print(f"  White in range: {white_in_range}, No duplicates: {white_no_dups}")
-            print(f"  Black in range: {black_in_range}, No duplicates: {black_no_dups}")
+        print(f"  White features: {len(white_feat)}, Black features: {len(black_feat)}")
+        print(f"  White in range: {white_in_range}, No duplicates: {white_no_dups}")
+        print(f"  Black in range: {black_in_range}, No duplicates: {black_no_dups}")
 
-            passed = white_in_range and white_no_dups and black_in_range and black_no_dups
-        else:
-            features = feature_extractor.board_to_features(board)
-
-            # Check features
-            in_range = all(0 <= f < max_features for f in features)
-            no_dups = len(features) == len(set(features))
-
-            print(f"  Features: {len(features)}")
-            print(f"  In range: {in_range}, No duplicates: {no_dups}")
-
-            passed = in_range and no_dups
+        passed = white_in_range and white_no_dups and black_in_range and black_no_dups
 
         if passed:
             print("  ✓ PASS")
@@ -921,7 +901,7 @@ def test_symmetry(nn_type: str, model_path: str):
         if passed:
             print("  ✓ PASS: Evaluations are symmetric")
         else:
-            print(f"  ⚠ WARNING: Evaluations differ by {diff:.6f} (tolerance: {tolerance})")
+            print(f"  ✗ WARNING: Evaluations differ by {diff:.6f} (tolerance: {tolerance})")
             all_passed = False
 
     print("\n" + "=" * 70)
@@ -1008,7 +988,7 @@ def test_edge_cases(nn_type: str, model_path: str):
                     if abs(eval_result) < 0.01:  # Should evaluate to ~0
                         print("  ✓ PASS: Correctly identified as stalemate with ~0 eval")
                     else:
-                        print(f"  ⚠ WARNING: Stalemate but eval is {eval_result:.6f}")
+                        print(f"  ✗ WARNING: Stalemate but eval is {eval_result:.6f}")
                 else:
                     print("  ✗ FAIL: Should be stalemate")
                     all_passed = False
@@ -1062,8 +1042,8 @@ def test_reset_consistency(nn_type: str, model_path: str):
     # Make some moves on evaluator1
     moves = ["e2e4", "e7e5", "g1f3", "b8c6", "f1b5"]
     for uci in moves:
-        move = chess.Move.from_uci(uci)
-        evaluator_push(evaluator1, board1, move)
+        move_int = uci_to_int(uci)
+        evaluator_push(evaluator1, board1, move_int)
 
     print(f"After {len(moves)} moves:")
     print(f"  Board1: {board1.fen()}")
@@ -1159,21 +1139,21 @@ def test_deep_search_simulation(nn_type: str, model_path: str, depth: int = 4,
         max_diff = max(max_diff, diff)
 
         if diff > tolerance:
-            print(f"  ✗ Mismatch at depth {len(path)}: diff={diff:.10e}")
-            print(f"    Path: {' '.join(m.uci() for m in path)}")
+            print(f"  âœ— Mismatch at depth {len(path)}: diff={diff:.10e}")
+            print(f"    Path: {' '.join(int_to_uci(m) for m in path)}")
             all_passed = False
 
         if depth_remaining == 0 or board.is_game_over():
             return 1
 
         nodes1 = 0
-        legal_moves = list(board.legal_moves)
-        random.shuffle(legal_moves)
-        moves_to_test = legal_moves[:5]
+        legal_moves_int = board.get_legal_moves_int()
+        random.shuffle(legal_moves_int)
+        moves_to_test = legal_moves_int[:5]
 
-        for move in moves_to_test:
-            evaluator_push(evaluator, board, move)
-            path.append(move)
+        for move_int in moves_to_test:
+            evaluator_push(evaluator, board, move_int)
+            path.append(move_int)
 
             nodes1 += search_recursive(depth_remaining - 1, path)
 
@@ -1256,26 +1236,26 @@ def test_engine_best_move():
         fen = line.split('- -')[0].strip()
         best_moves = line.split('- -')[1].split('bm')[1].split(';')[0].strip().split(' ')
 
-        board = chess.Board(fen)
-        expected_moves = []
+        board = CachedBoard(fen)
+        expected_moves_int = []
         for best_move in best_moves:
-            expected_move = board.parse_san(best_move)
-            expected_moves.append(expected_move)
+            expected_move_int = board.parse_san(best_move)
+            expected_moves_int.append(expected_move_int)
 
         f = io.StringIO()
         with redirect_stdout(f):
-            found_move, score, _, nodes, nps = find_best_move(fen, max_depth=30, time_limit=test_suite[3],
-                                                              expected_best_moves=expected_moves)
+            found_move_int, score, _, nodes, nps = find_best_move(fen, max_depth=30, time_limit=test_suite[3],
+                                                              expected_best_moves=expected_moves_int)
             nps_sum += nps
             nodes_sum += nodes
 
-        found_move = board.san(found_move)
+        found_move_san = board.san(found_move_int)
 
-        if found_move in best_moves:
+        if found_move_san in best_moves:
             tests_passed += 1
             print(f"{tests_total}.", end="", flush=True)
         else:
-            print(f"\nFailed test: fen={fen}, expected_moves={expected_moves}, found_move={found_move}")
+            print(f"\nFailed test: fen={fen}, expected_moves={best_moves}, found_move={found_move_san}")
 
     print("\n" + "=" * 70)
     print(f"total={tests_total}, passed={tests_passed}, "
@@ -1328,12 +1308,12 @@ def test_random_games(nn_type: str, model_path: str, num_games: int = 10, max_mo
                 break
 
             # Pick a random legal move
-            legal_moves = list(board.legal_moves)
-            move = random.choice(legal_moves)
+            legal_moves_int = board.get_legal_moves_int()
+            move_int = random.choice(legal_moves_int)
 
             # Push and validate
-            evaluator_push(evaluator, board, move)
-            moves_played.append(move)
+            evaluator_push(evaluator, board, move_int)
+            moves_played.append(move_int)
             total_positions += 1
 
             eval_inc = evaluator._evaluate(board)
@@ -1347,7 +1327,7 @@ def test_random_games(nn_type: str, model_path: str, num_games: int = 10, max_mo
                     'move': move_num,
                     'fen': board.fen(),
                     'diff': diff,
-                    'moves': [m.uci() for m in moves_played[-5:]]
+                    'moves': [int_to_uci(m) for m in moves_played[-5:]]
                 })
                 all_passed = False
 
@@ -1480,11 +1460,11 @@ Test types:
 
 Examples:
   %(prog)s --nn-type NNUE --test 0          # Interactive FEN
-  %(prog)s --nn-type DNN --test 1           # Performance test
+  %(prog)s --nn-type NNUE --test 1           # Performance test
   %(prog)s --nn-type NNUE --test 2          # Accumulator correctness
-  %(prog)s --nn-type DNN --test 3 --positions 1000  # Eval accuracy
-  %(prog)s --nn-type DNN --test 10 --num-positions 10  # Data integrity
-  %(prog)s --nn-type NNUE --test 11         # Run all tests
+  %(prog)s --nn-type NNUE --test 3 --positions 1000  # Eval accuracy
+  %(prog)s --nn-type NNUE --test 10 --num-positions 10  # Random games
+  %(prog)s --nn-type NNUE --test 13         # Run all tests
   %(prog)s --nn-type NNUE --test 4 --positions 100  # NN vs Stockfish
 """
     )
@@ -1492,9 +1472,10 @@ Examples:
     parser.add_argument(
         '--nn-type', '-n',
         type=str,
-        choices=['NNUE', 'DNN'],
+        choices=['NNUE'],
+        default='NNUE',
         required=False,
-        help='Neural network type: NNUE or DNN'
+        help='Neural network type (default: NNUE)'
     )
 
     parser.add_argument(
@@ -1516,7 +1497,7 @@ Examples:
         '--model-path', '-m',
         type=str,
         default=None,
-        help='Path to model file (default: model/nnue.pt or model/dnn.pt)'
+        help='Path to model file (default: model/nnue.pt)'
     )
 
     parser.add_argument(

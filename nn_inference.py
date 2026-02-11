@@ -1,21 +1,27 @@
 """
 Neural Network Inference Module for Chess Engine
-OPTIMIZED VERSION
+OPTIMIZED VERSION - No python-chess dependency
 
 Optimizations:
-- Uses Cython-accelerated ops when available (5-10x faster)
+- Uses Cython-accelerated ops (required)
 - Pre-allocated buffers for all intermediate computations
 - Inlined clipped_relu operations
 - Batched accumulator updates
 - Pre-computed lookup tables
+- Pure integer move representation
 """
 
 import sys
 from typing import List, Tuple, Set, Dict, Optional
-import chess
 
 import config
-from cached_board import CachedBoard
+from cached_board import (
+    CachedBoard, int_to_tuple,
+    PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING,
+    WHITE, BLACK,
+    A1, H1, F1, D1, A8, H8, F8, D8,
+    SQUARES,
+)
 import numpy as np
 import torch
 from torch import nn as nn
@@ -71,7 +77,7 @@ _PIECE_INDEX_TABLE = np.array([
 ], dtype=np.int8)
 
 # Piece type mapping:
-# Uses piece_type - 1 since chess.PAWN=1, chess.KNIGHT=2, chess.BISHOP=3, chess.ROOK=4, chess.QUEEN=5, chess.KING=6
+# Uses piece_type - 1 since PAWN=1, KNIGHT=2, BISHOP=3, ROOK=4, QUEEN=5, KING=6
 # This gives: P=0, N=1, B=2, R=3, Q=4, K=5
 #
 # NNUE encoding (40,960 features):
@@ -111,9 +117,9 @@ class NNUEFeatures:
         if not perspective:
             king_square = int(_FLIPPED_SQUARES[king_square])
 
-        for square in chess.SQUARES:
+        for square in SQUARES:
             piece = board.piece_at(square)
-            if piece is None or piece.piece_type == chess.KING:
+            if piece is None or piece.piece_type == KING:
                 continue
 
             piece_square = square
@@ -135,8 +141,8 @@ class NNUEFeatures:
 
     @staticmethod
     def board_to_features(board: CachedBoard) -> Tuple[List[int], List[int]]:
-        white_features = NNUEFeatures.extract_features(board, chess.WHITE)
-        black_features = NNUEFeatures.extract_features(board, chess.BLACK)
+        white_features = NNUEFeatures.extract_features(board, WHITE)
+        black_features = NNUEFeatures.extract_features(board, BLACK)
         return white_features, black_features
 
 
@@ -144,10 +150,10 @@ class NNUEIncrementalUpdater:
     """Efficiently maintains NNUE features with incremental updates and undo support."""
 
     def __init__(self, board: CachedBoard):
-        self.white_features: Set[int] = set(NNUEFeatures.extract_features(board, chess.WHITE))
-        self.black_features: Set[int] = set(NNUEFeatures.extract_features(board, chess.BLACK))
-        self.white_king_sq = board.king(chess.WHITE)
-        self.black_king_sq = board.king(chess.BLACK)
+        self.white_features: Set[int] = set(NNUEFeatures.extract_features(board, WHITE))
+        self.black_features: Set[int] = set(NNUEFeatures.extract_features(board, BLACK))
+        self.white_king_sq = board.king(WHITE)
+        self.black_king_sq = board.king(BLACK)
         self.history_stack: List[Dict] = []
         self.last_change: Optional[Dict] = None
 
@@ -170,7 +176,7 @@ class NNUEIncrementalUpdater:
         """
         OPTIMIZATION: Inlined feature computation to avoid function call overhead.
         """
-        if piece_type == chess.KING or piece_type < 1 or piece_type > 5:
+        if piece_type == KING or piece_type < 1 or piece_type > 5:
             return
 
         # Inline white perspective feature computation
@@ -197,7 +203,7 @@ class NNUEIncrementalUpdater:
         """
         OPTIMIZATION: Inlined feature computation to avoid function call overhead.
         """
-        if piece_type == chess.KING or piece_type < 1 or piece_type > 5:
+        if piece_type == KING or piece_type < 1 or piece_type > 5:
             return
 
         # Inline white perspective feature computation
@@ -219,7 +225,7 @@ class NNUEIncrementalUpdater:
             self.black_features.add(black_feat)
             change_record['black_added'].add(black_feat)
 
-    def update_pre_push(self, board_before_push: CachedBoard, move: chess.Move) -> Tuple[bool, bool, Dict]:
+    def update_pre_push(self, board_before_push: CachedBoard, move_int: int) -> Tuple[bool, bool, Dict]:
         """
         This method handles all feature changes that can be computed from the pre-move board:
         - Captures (including en passant)
@@ -233,8 +239,7 @@ class NNUEIncrementalUpdater:
             Tuple of (is_white_king_move, is_black_king_move, change_record)
             Pass these to update_post_push() after calling board.push(move).
         """
-        from_sq = move.from_square
-        to_sq = move.to_square
+        from_sq, to_sq, promo = int_to_tuple(move_int)
 
         change_record = {
             'white_added': set(), 'white_removed': set(),
@@ -252,8 +257,8 @@ class NNUEIncrementalUpdater:
         moving_piece_type = piece.piece_type
         moving_piece_color = piece.color
 
-        is_white_king_move = (moving_piece_type == chess.KING and moving_piece_color == chess.WHITE)
-        is_black_king_move = (moving_piece_type == chess.KING and moving_piece_color == chess.BLACK)
+        is_white_king_move = (moving_piece_type == KING and moving_piece_color == WHITE)
+        is_black_king_move = (moving_piece_type == KING and moving_piece_color == BLACK)
 
         # For king moves, save the entire feature set for that perspective (for undo)
         # and update the king square. Feature rebuild happens in update_post_push.
@@ -268,10 +273,10 @@ class NNUEIncrementalUpdater:
 
         # Handle captures - these affect the non-moving side's features
         captured_piece = board_before_push.piece_at(to_sq)
-        is_en_passant = board_before_push.is_en_passant(move)
+        is_en_passant = board_before_push.is_en_passant_int(move_int)
 
         if is_en_passant:
-            ep_sq = to_sq + (-8 if moving_piece_color == chess.WHITE else 8)
+            ep_sq = to_sq + (-8 if moving_piece_color == WHITE else 8)
             captured_piece = board_before_push.piece_at(ep_sq)
             if captured_piece:
                 self._remove_piece_features(ep_sq, captured_piece.piece_type,
@@ -282,31 +287,31 @@ class NNUEIncrementalUpdater:
                                         captured_piece.color, change_record)
 
         # Handle castling rook movement
-        is_castling = board_before_push.is_castling(move)
+        is_castling = board_before_push.is_castling_int(move_int)
         rook_to = None
         if is_castling:
             if to_sq > from_sq:  # Kingside
-                rook_from = chess.H1 if moving_piece_color == chess.WHITE else chess.H8
-                rook_to = chess.F1 if moving_piece_color == chess.WHITE else chess.F8
+                rook_from = H1 if moving_piece_color == WHITE else H8
+                rook_to = F1 if moving_piece_color == WHITE else F8
             else:  # Queenside
-                rook_from = chess.A1 if moving_piece_color == chess.WHITE else chess.A8
-                rook_to = chess.D1 if moving_piece_color == chess.WHITE else chess.D8
-            self._remove_piece_features(rook_from, chess.ROOK, moving_piece_color, change_record)
+                rook_from = A1 if moving_piece_color == WHITE else A8
+                rook_to = D1 if moving_piece_color == WHITE else D8
+            self._remove_piece_features(rook_from, ROOK, moving_piece_color, change_record)
 
         # For non-king moves, handle the moving piece's feature changes
         if not is_white_king_move and not is_black_king_move:
             self._remove_piece_features(from_sq, moving_piece_type, moving_piece_color, change_record)
 
-            final_piece_type = move.promotion if move.promotion else moving_piece_type
+            final_piece_type = promo if promo else moving_piece_type
             self._add_piece_features(to_sq, final_piece_type, moving_piece_color, change_record)
 
         # For castling, add the rook at its new position
         if is_castling and rook_to is not None:
-            self._add_piece_features(rook_to, chess.ROOK, moving_piece_color, change_record)
+            self._add_piece_features(rook_to, ROOK, moving_piece_color, change_record)
 
         return is_white_king_move, is_black_king_move, change_record
 
-    def update_pre_push_fast(self, move: chess.Move, moving_piece_type: int, moving_piece_color: bool,
+    def update_pre_push_fast(self, move_int: int, moving_piece_type: int, moving_piece_color: bool,
                              is_en_passant: bool, is_castling: bool, captured_piece_type: Optional[int],
                              captured_piece_color: Optional[bool]) -> Tuple[bool, bool, Dict]:
         """
@@ -315,7 +320,7 @@ class NNUEIncrementalUpdater:
 
         Args:
             board_before_push: Board state BEFORE the move
-            move: The move being made
+            move_int: The move being made (as integer)
             moving_piece_type: Type of the piece being moved (1-6)
             moving_piece_color: Color of moving piece (True=WHITE)
             is_en_passant: Whether this is an en passant capture
@@ -326,8 +331,7 @@ class NNUEIncrementalUpdater:
         Returns:
             Tuple of (is_white_king_move, is_black_king_move, change_record)
         """
-        from_sq = move.from_square
-        to_sq = move.to_square
+        from_sq, to_sq, promo = int_to_tuple(move_int)
 
         change_record = {
             'white_added': set(), 'white_removed': set(),
@@ -342,8 +346,8 @@ class NNUEIncrementalUpdater:
         if moving_piece_type is None:
             return False, False, change_record
 
-        is_white_king_move = (moving_piece_type == chess.KING and moving_piece_color == chess.WHITE)
-        is_black_king_move = (moving_piece_type == chess.KING and moving_piece_color == chess.BLACK)
+        is_white_king_move = (moving_piece_type == KING and moving_piece_color == WHITE)
+        is_black_king_move = (moving_piece_type == KING and moving_piece_color == BLACK)
 
         # For king moves, save the entire feature set for that perspective (for undo)
         # and update the king square. Feature rebuild happens in update_post_push.
@@ -359,9 +363,9 @@ class NNUEIncrementalUpdater:
         # Handle captures - NO piece_at() calls needed!
         if is_en_passant:
             # En passant: captured pawn is adjacent to to_sq
-            ep_sq = to_sq + (-8 if moving_piece_color == chess.WHITE else 8)
+            ep_sq = to_sq + (-8 if moving_piece_color == WHITE else 8)
             # Captured piece is always an opponent pawn
-            self._remove_piece_features(ep_sq, chess.PAWN, not moving_piece_color, change_record)
+            self._remove_piece_features(ep_sq, PAWN, not moving_piece_color, change_record)
         elif captured_piece_type is not None and captured_piece_color is not None:
             # Regular capture
             self._remove_piece_features(to_sq, captured_piece_type, captured_piece_color, change_record)
@@ -370,23 +374,23 @@ class NNUEIncrementalUpdater:
         rook_to = None
         if is_castling:
             if to_sq > from_sq:  # Kingside
-                rook_from = chess.H1 if moving_piece_color == chess.WHITE else chess.H8
-                rook_to = chess.F1 if moving_piece_color == chess.WHITE else chess.F8
+                rook_from = H1 if moving_piece_color == WHITE else H8
+                rook_to = F1 if moving_piece_color == WHITE else F8
             else:  # Queenside
-                rook_from = chess.A1 if moving_piece_color == chess.WHITE else chess.A8
-                rook_to = chess.D1 if moving_piece_color == chess.WHITE else chess.D8
-            self._remove_piece_features(rook_from, chess.ROOK, moving_piece_color, change_record)
+                rook_from = A1 if moving_piece_color == WHITE else A8
+                rook_to = D1 if moving_piece_color == WHITE else D8
+            self._remove_piece_features(rook_from, ROOK, moving_piece_color, change_record)
 
         # For non-king moves, handle the moving piece's feature changes
         if not is_white_king_move and not is_black_king_move:
             self._remove_piece_features(from_sq, moving_piece_type, moving_piece_color, change_record)
 
-            final_piece_type = move.promotion if move.promotion else moving_piece_type
+            final_piece_type = promo if promo else moving_piece_type
             self._add_piece_features(to_sq, final_piece_type, moving_piece_color, change_record)
 
         # For castling, add the rook at its new position
         if is_castling and rook_to is not None:
-            self._add_piece_features(rook_to, chess.ROOK, moving_piece_color, change_record)
+            self._add_piece_features(rook_to, ROOK, moving_piece_color, change_record)
 
         return is_white_king_move, is_black_king_move, change_record
 
@@ -407,7 +411,7 @@ class NNUEIncrementalUpdater:
         # For king moves, rebuild the entire feature set for that perspective
         # because all features are indexed by the king square
         if is_white_king_move:
-            new_white_features = set(NNUEFeatures.extract_features(board_after_push, chess.WHITE))
+            new_white_features = set(NNUEFeatures.extract_features(board_after_push, WHITE))
             # Update the change record for proper accumulator updates
             prev_features = change_record.get('prev_white_features') or set()
             change_record['white_added'] = new_white_features - prev_features
@@ -415,7 +419,7 @@ class NNUEIncrementalUpdater:
             self.white_features = new_white_features
 
         if is_black_king_move:
-            new_black_features = set(NNUEFeatures.extract_features(board_after_push, chess.BLACK))
+            new_black_features = set(NNUEFeatures.extract_features(board_after_push, BLACK))
             prev_features = change_record.get('prev_black_features') or set()
             change_record['black_added'] = new_black_features - prev_features
             change_record['black_removed'] = prev_features - new_black_features
@@ -424,7 +428,7 @@ class NNUEIncrementalUpdater:
         self.history_stack.append(change_record)
         self.last_change = change_record
 
-    def push(self, board_before_push: CachedBoard, move: chess.Move):
+    def push(self, board_before_push: CachedBoard, move_int: int):
         """
         Single-phase push for backward compatibility.
         Combines update_pre_push and update_post_push.
@@ -433,12 +437,12 @@ class NNUEIncrementalUpdater:
         use the two-phase API (update_pre_push / update_post_push) directly.
         """
         is_white_king_move, is_black_king_move, change_record = self.update_pre_push(
-            board_before_push, move
+            board_before_push, move_int
         )
 
         # Create temporary board for post-push state
         temp_board = board_before_push.copy()
-        temp_board.push(move)
+        temp_board.push(move_int)
 
         self.update_post_push(temp_board, is_white_king_move, is_black_king_move, change_record)
 
@@ -469,7 +473,7 @@ class NNUEIncrementalUpdater:
         return self.white_features, self.black_features
 
     def get_features(self, board: CachedBoard) -> List[int]:
-        if board.turn == chess.WHITE:
+        if board.turn == WHITE:
             return list(self.white_features)
         return list(self.black_features)
 
@@ -792,7 +796,7 @@ class NNUEInference:
 
     def evaluate_board(self, board: CachedBoard) -> float:
         white_feat, black_feat = NNUEFeatures.board_to_features(board)
-        return self.evaluate_full(white_feat, black_feat, board.turn == chess.WHITE)
+        return self.evaluate_full(white_feat, black_feat, board.turn == WHITE)
 
 
 def load_model(model_path: str, nn_type: str = "NNUE"):

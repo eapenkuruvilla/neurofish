@@ -1,7 +1,9 @@
 /**
  * bindings.cpp - pybind11 Python bindings for chess_wrapper
  *
- * Updated for Python 3.13+ free-threading (no-GIL) support
+ * Thread Safety: This module is safe to use without the GIL.
+ * Each FastBoard instance is independent with no shared mutable state.
+ * Different threads can safely operate on different board instances.
  */
 
 #include <pybind11/pybind11.h>
@@ -11,8 +13,16 @@
 
 namespace py = pybind11;
 
-PYBIND11_MODULE(chess_cpp, m, py::mod_gil_not_used()) {
-    m.doc() = "Fast C++ chess library bindings for Python (free-threading safe)";
+// Check for pybind11 >= 2.12 which added py::mod_gil_not_used() for free-threading
+// PYBIND11_VERSION_HEX format: 0xMMmmpp00 where MM=major, mm=minor, pp=patch
+#if PYBIND11_VERSION_HEX >= 0x020C0000
+    // pybind11 2.12+ with free-threading support
+    PYBIND11_MODULE(chess_cpp, m, py::mod_gil_not_used()) {
+#else
+    // Older pybind11 - GIL will be used
+    PYBIND11_MODULE(chess_cpp, m) {
+#endif
+    m.doc() = "Fast C++ chess library bindings for Python (thread-safe)";
 
     // ============== PyMove ==============
     py::class_<chess_wrapper::PyMove>(m, "Move")
@@ -143,17 +153,23 @@ PYBIND11_MODULE(chess_cpp, m, py::mod_gil_not_used()) {
     m.attr("WHITE") = true;
     m.attr("BLACK") = false;
 
-    // Standard squares
-    m.attr("A1") = 0;
-    m.attr("B1") = 1;
-    m.attr("C1") = 2;
-    m.attr("D1") = 3;
-    m.attr("E1") = 4;
-    m.attr("F1") = 5;
-    m.attr("G1") = 6;
-    m.attr("H1") = 7;
-    m.attr("A8") = 56;
-    m.attr("H8") = 63;
+    // All 64 squares (matching python-chess naming: A1=0, B1=1, ..., H8=63)
+    m.attr("A1") = 0;  m.attr("B1") = 1;  m.attr("C1") = 2;  m.attr("D1") = 3;
+    m.attr("E1") = 4;  m.attr("F1") = 5;  m.attr("G1") = 6;  m.attr("H1") = 7;
+    m.attr("A2") = 8;  m.attr("B2") = 9;  m.attr("C2") = 10; m.attr("D2") = 11;
+    m.attr("E2") = 12; m.attr("F2") = 13; m.attr("G2") = 14; m.attr("H2") = 15;
+    m.attr("A3") = 16; m.attr("B3") = 17; m.attr("C3") = 18; m.attr("D3") = 19;
+    m.attr("E3") = 20; m.attr("F3") = 21; m.attr("G3") = 22; m.attr("H3") = 23;
+    m.attr("A4") = 24; m.attr("B4") = 25; m.attr("C4") = 26; m.attr("D4") = 27;
+    m.attr("E4") = 28; m.attr("F4") = 29; m.attr("G4") = 30; m.attr("H4") = 31;
+    m.attr("A5") = 32; m.attr("B5") = 33; m.attr("C5") = 34; m.attr("D5") = 35;
+    m.attr("E5") = 36; m.attr("F5") = 37; m.attr("G5") = 38; m.attr("H5") = 39;
+    m.attr("A6") = 40; m.attr("B6") = 41; m.attr("C6") = 42; m.attr("D6") = 43;
+    m.attr("E6") = 44; m.attr("F6") = 45; m.attr("G6") = 46; m.attr("H6") = 47;
+    m.attr("A7") = 48; m.attr("B7") = 49; m.attr("C7") = 50; m.attr("D7") = 51;
+    m.attr("E7") = 52; m.attr("F7") = 53; m.attr("G7") = 54; m.attr("H7") = 55;
+    m.attr("A8") = 56; m.attr("B8") = 57; m.attr("C8") = 58; m.attr("D8") = 59;
+    m.attr("E8") = 60; m.attr("F8") = 61; m.attr("G8") = 62; m.attr("H8") = 63;
 
     // Bitboard constants for squares (useful for castling rights checks)
     m.attr("BB_A1") = chess_wrapper::BB::A1;

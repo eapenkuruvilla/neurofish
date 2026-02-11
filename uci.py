@@ -7,6 +7,7 @@ import chess
 import chess.polyglot
 
 import config
+from cached_board import int_to_uci
 from chess_engine import (find_best_move, TimeControl, nn_eval_cache,
                           clear_game_history, game_position_history, kpi,
                           diag_summary, set_debug_mode,
@@ -38,7 +39,7 @@ ponder_fen = None  # FEN of the position being pondered
 # Ponder time tracking - store time info from "go ponder" command
 ponder_time_info = None  # Dict with wtime, btime, winc, binc, movestogo
 ponder_start_time = None  # Time when ponder search started
-ponder_best_move = None  # Best move found during pondering
+ponder_best_move_uci = None  # Best move found during pondering (UCI string)
 ponder_best_score = None  # Score of best move during pondering
 
 """
@@ -63,7 +64,7 @@ def record_position_hash(board: chess.Board):
 def uci_loop():
     global search_thread, use_book, use_ponder, RESIGN_THRESHOLD, RESIGN_CONSECUTIVE_MOVES, resign_counter
     global is_pondering, ponder_fen
-    global ponder_time_info, ponder_start_time, ponder_best_move, ponder_best_score
+    global ponder_time_info, ponder_start_time, ponder_best_move_uci, ponder_best_score
     board = chess.Board()
     book_path = DEFAULT_BOOK_PATH
 
@@ -144,7 +145,7 @@ def uci_loop():
             ponder_fen = None
             ponder_time_info = None
             ponder_start_time = None
-            ponder_best_move = None
+            ponder_best_move_uci = None
             ponder_best_score = None
             TimeControl.is_ponder_search = False
 
@@ -158,7 +159,7 @@ def uci_loop():
             ponder_fen = None
             ponder_time_info = None
             ponder_start_time = None
-            ponder_best_move = None
+            ponder_best_move_uci = None
             ponder_best_score = None
             TimeControl.is_ponder_search = False
 
@@ -208,7 +209,7 @@ def uci_loop():
                 is_pondering = True
                 ponder_fen = board.fen()
                 ponder_start_time = time.time()
-                ponder_best_move = None
+                ponder_best_move_uci = None
                 ponder_best_score = None
 
                 # Set up TimeControl for ponder - long safety limit, ponderhit will update it
@@ -296,7 +297,7 @@ def uci_loop():
                 fen = board.fen()
 
                 def search_and_report():
-                    global resign_counter, is_pondering, ponder_best_move, ponder_best_score
+                    global resign_counter, is_pondering, ponder_best_move_uci, ponder_best_score
 
                     # go_ponder is captured from the enclosing scope (immutable for this search).
                     # is_pondering is the live global that ponderhit can set to False.
@@ -306,58 +307,64 @@ def uci_loop():
                     kpi['nodes'] = 0
 
                     # FIX: Initialize ponder move with first legal move as fallback
+                    ponder_best_move_uci = None
                     if go_ponder:
                         try:
                             temp_board = chess.Board(fen)
                             legal_moves = list(temp_board.legal_moves)
                             if legal_moves:
                                 ponder_best_move = legal_moves[0]
+                                ponder_best_move_uci = ponder_best_move.uci()
                                 ponder_best_score = 0
-                                diag_print(f"Initialized ponder_best_move fallback: {ponder_best_move.uci()}")
+                                diag_print(f"Initialized ponder_best_move fallback: {ponder_best_move_uci}")
                         except Exception as e:
                             diag_print(f"Failed to initialize ponder_best_move: {e}")
 
                     # Use parallel search if MP enabled, otherwise single-threaded
                     # For ponder searches: preserve TT (clear_tt=False) and use pre-configured
                     # TimeControl (use_existing_time_control=True) to avoid race with ponderhit.
+                    # All searches now return integer moves
+                    best_move_int = 0
+                    best_move_uci = "0000"
+                    pv_int = []
                     try:
                         if lazy_smp.is_mp_enabled():
                             diag_print(f"Starting parallel search (ponder={go_ponder})")
-                            best_move, score, pv, nodes, nps = lazy_smp.parallel_find_best_move(
+                            best_move_int, score, pv_int, nodes, nps = lazy_smp.parallel_find_best_move(
                                 fen, max_depth=max_depth, time_limit=movetime,
                                 clear_tt=(not go_ponder),
                                 use_existing_time_control=go_ponder)
-                            diag_print(f"Parallel search returned: move={best_move}, score={score}")
+                            best_move_uci = int_to_uci(best_move_int) if best_move_int else "0000"
+                            diag_print(f"Parallel search returned: move={best_move_uci}, score={score}")
                             # Print final info line for MP search
-                            if pv:
+                            if pv_int:
+                                pv_uci = ' '.join(int_to_uci(m) for m in pv_int)
                                 print(
-                                    f"info depth {len(pv)} score cp {score} nodes {nodes} nps {nps} pv {' '.join(m.uci() for m in pv)}",
+                                    f"info depth {len(pv_int)} score cp {score} nodes {nodes} nps {nps} pv {pv_uci}",
                                     flush=True)
                         else:
                             diag_print(f"Starting single-threaded search (ponder={go_ponder})")
-                            best_move, score, pv, _, _ = find_best_move(
+                            best_move_int, score, pv_int, _, _ = find_best_move(
                                 fen, max_depth=max_depth, time_limit=movetime,
                                 clear_tt=(not go_ponder),
                                 use_existing_time_control=go_ponder)
-                            diag_print(f"Single-threaded search returned: move={best_move}, score={score}")
+                            best_move_uci = int_to_uci(best_move_int) if best_move_int else "0000"
+                            diag_print(f"Single-threaded search returned: move={best_move_uci}, score={score}")
                     except Exception as e:
                         diag_print(f"Search exception: {e}")
-                        best_move = ponder_best_move
+                        best_move_uci = ponder_best_move_uci if ponder_best_move_uci else "0000"
                         score = ponder_best_score if ponder_best_score is not None else 0
-                        pv = [best_move] if best_move else []
+                        pv_int = []
 
                     # Store best move/score from pondering
                     if go_ponder:
-                        if best_move is not None:
-                            ponder_best_move = best_move
+                        if best_move_uci != "0000":
+                            ponder_best_move_uci = best_move_uci
                             ponder_best_score = score
-                            diag_print(f"Updated ponder_best_move: {ponder_best_move.uci()}")
+                            diag_print(f"Updated ponder_best_move: {ponder_best_move_uci}")
 
                         # If search completed naturally (hit safety time limit or max depth),
                         # wait for stop (ponder miss) or ponderhit (which sets is_pondering=False).
-                        # On ponderhit, TimeControl is updated with real time and the search
-                        # has already completed — we just output the result.
-                        # On stop (ponder miss), we output bestmove (GUI ignores it).
                         if not TimeControl.stop_search and is_pondering:
                             diag_print(f"Ponder search completed, waiting for stop/ponderhit")
                             while is_pondering and not TimeControl.stop_search:
@@ -376,50 +383,38 @@ def uci_loop():
                         else:
                             resign_counter = 0
 
-                    # Extract ponder move from PV if available
-                    ponder_move = None
-                    if use_ponder and pv and len(pv) >= 2:
+                    # Extract ponder move from PV if available (now always integers)
+                    ponder_move_uci = None
+                    if use_ponder and pv_int and len(pv_int) >= 2:
                         try:
-                            pm = pv[1]
-                            # Handle case where pv contains integers instead of chess.Move
-                            if isinstance(pm, int):
-                                from cached_board import int_to_move
-                                ponder_move = int_to_move(pm)
-                            else:
-                                ponder_move = pm
+                            ponder_move_uci = int_to_uci(pv_int[1])
                         except Exception as e:
                             diag_print(f"Error extracting ponder move: {e}")
-                            ponder_move = None
+                            ponder_move_uci = None
 
-                    diag_print(f"About to output bestmove: {best_move}, ponder_move: {ponder_move}")
+                    diag_print(f"About to output bestmove: {best_move_uci}, ponder_move: {ponder_move_uci}")
 
                     try:
-                        # Check for null/invalid move - avoid chess.Move.null() due to potential scoping issues
-                        is_null_move = (best_move is None or
-                                        (hasattr(best_move, 'uci') and best_move.uci() == '0000'))
+                        # Check for null/invalid move
+                        is_null_move = (best_move_uci == "0000" or best_move_int == 0)
 
                         if is_null_move:
                             print("bestmove 0000", flush=True)
                         elif should_resign:
-                            # Output bestmove with resign indication
-                            if ponder_move:
-                                print(f"bestmove {best_move.uci()} ponder {ponder_move.uci()}", flush=True)
+                            if ponder_move_uci:
+                                print(f"bestmove {best_move_uci} ponder {ponder_move_uci}", flush=True)
                             else:
-                                print(f"bestmove {best_move.uci()}", flush=True)
+                                print(f"bestmove {best_move_uci}", flush=True)
                             print("info string resign", flush=True)
                         else:
-                            if ponder_move:
-                                print(f"bestmove {best_move.uci()} ponder {ponder_move.uci()}", flush=True)
+                            if ponder_move_uci:
+                                print(f"bestmove {best_move_uci} ponder {ponder_move_uci}", flush=True)
                             else:
-                                print(f"bestmove {best_move.uci()}", flush=True)
+                                print(f"bestmove {best_move_uci}", flush=True)
                     except Exception as e:
                         diag_print(f"Error outputting bestmove: {e}")
-                        # Fallback: output without ponder move
                         try:
-                            if best_move is not None and hasattr(best_move, 'uci'):
-                                print(f"bestmove {best_move.uci()}", flush=True)
-                            else:
-                                print("bestmove 0000", flush=True)
+                            print(f"bestmove {best_move_uci}", flush=True)
                         except:
                             print("bestmove 0000", flush=True)
 
@@ -480,7 +475,7 @@ def uci_loop():
                     diag_print(f"ponderhit time_limit={ponderhit_time_limit:.2f}s (clock={time_left}ms)")
 
                 # If we have very little time, force immediate stop so search outputs now
-                if ponderhit_time_limit < 0.3 and ponder_best_move:
+                if ponderhit_time_limit < 0.3 and ponder_best_move_uci:
                     diag_print(f"ponderhit: time critical, forcing immediate stop")
                     # Set is_pondering=False so search thread outputs bestmove
                     is_pondering = False
@@ -496,7 +491,7 @@ def uci_loop():
                     ponderhit_time_limit = max(0.1, ponderhit_time_limit * 0.70)
                     diag_print(f"ponderhit adjusted: {ponderhit_raw:.2f}s -> {ponderhit_time_limit:.2f}s")
 
-                    # Update TimeControl with real time — the running search picks this up.
+                    # Update TimeControl with real time â€” the running search picks this up.
                     # Order matters to avoid race with check_time():
                     TimeControl.soft_stop = False
                     TimeControl.start_time = time.perf_counter()
@@ -511,7 +506,7 @@ def uci_loop():
                     diag_print(f"ponderhit: TimeControl updated, search continues")
 
             elif is_pondering:
-                # Search thread already finished (or wasn't started) — just clear state
+                # Search thread already finished (or wasn't started) â€” just clear state
                 diag_print(f"ponderhit: search thread not alive, clearing ponder state")
                 is_pondering = False
                 TimeControl.is_ponder_search = False
@@ -539,9 +534,9 @@ def uci_loop():
                 f"Checking if we need fallback bestmove: thread_finished={thread_finished}")
             if not thread_finished:
                 # Output fallback bestmove if thread is stuck
-                diag_print(f"Outputting fallback bestmove: ponder_best_move={ponder_best_move}")
-                if ponder_best_move:
-                    print(f"bestmove {ponder_best_move.uci()}", flush=True)
+                diag_print(f"Outputting fallback bestmove: ponder_best_move_uci={ponder_best_move_uci}")
+                if ponder_best_move_uci:
+                    print(f"bestmove {ponder_best_move_uci}", flush=True)
                 else:
                     # Last resort: output null move
                     print("bestmove 0000", flush=True)

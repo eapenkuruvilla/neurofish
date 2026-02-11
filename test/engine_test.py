@@ -3,11 +3,10 @@ import re
 import time
 from contextlib import redirect_stdout
 
-import chess
-
 import config
 import lazy_smp
 from config import print_overridden_config
+from cached_board import CachedBoard
 from chess_engine import find_best_move, TimeControl
 
 # https://www.chessprogramming.org/Test-Positions
@@ -450,33 +449,33 @@ def run_engine_tests(test_suite, is_mp=False):
         fen = line.split('- -')[0].strip()
         best_moves = line.split('- -')[1].split('bm')[1].split(';')[0].strip().split(' ')
 
-        board = chess.Board(fen)
-        expected_moves = []
+        board = CachedBoard(fen)
+        expected_moves_int = []
         for best_move in best_moves:
-            expected_move = board.parse_san(best_move)
-            expected_moves.append(expected_move)
+            expected_move_int = board.parse_san(best_move)
+            expected_moves_int.append(expected_move_int)
 
         f = io.StringIO()
         with redirect_stdout(f):
             start_time = time.perf_counter()
             if is_mp:
                 lazy_smp.clear_shared_tables()
-                found_move, score, _, nodes, nps = lazy_smp.parallel_find_best_move(fen, max_depth=30,
+                found_move_int, score, _, nodes, nps = lazy_smp.parallel_find_best_move(fen, max_depth=30,
                                                                                      time_limit=test_suite[3])
             else:
-                found_move, score, _, _, _ = find_best_move(fen, max_depth=30, time_limit=test_suite[3],
-                                                            expected_best_moves=expected_moves)
+                found_move_int, score, _, _, _ = find_best_move(fen, max_depth=30, time_limit=test_suite[3],
+                                                            expected_best_moves=expected_moves_int)
             end_time = time.perf_counter()
             time_exec = end_time - start_time
             time_max = max(time_max, time_exec)
             time_sum += time_exec
 
-        found_move = board.san(found_move)
+        found_move_san = board.san(found_move_int)
 
-        if found_move in best_moves:
+        if found_move_san in best_moves:
             tests_passed += 1
         else:
-            print(f"Failed test: fen={fen}, expected_moves={expected_moves}, found_move={found_move}")
+            print(f"Failed test: fen={fen}, expected_moves={best_moves}, found_move={found_move_san}")
 
         print(f"total={tests_total}, passed={tests_passed}, "
               f"success-rate={round(tests_passed / tests_total * 100, 2)}%")

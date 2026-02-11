@@ -6,13 +6,18 @@ import threading
 from collections import namedtuple
 from pathlib import Path
 from typing import List, Tuple, Optional, Callable
-import chess
-import chess.polyglot
+# import chess  # Removed - using cached_board constants
+# import chess.polyglot  # Removed - polyglot handled in book.py
 import numpy as np
 import random
 
 import config
-from cached_board import CachedBoard, move_to_int, int_to_move
+from cached_board import (
+    CachedBoard, int_to_tuple, int_to_uci, uci_to_int, move_to_int_from_obj,
+    PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING,
+    WHITE, BLACK,
+    PIECE_VALUES,
+)
 from config import configure_multi_core_blas
 from nn_evaluator import NNUEEvaluator, NNEvaluator
 
@@ -33,7 +38,7 @@ def set_debug_mode(enabled: bool):
 
 
 # ======================================================================
-# Shared state (module globals) â€” intentionally shared across threads
+# Shared state (module globals) Ã¢â‚¬â€ intentionally shared across threads
 # ======================================================================
 
 class TimeControl:
@@ -54,25 +59,16 @@ nn_eval_cache = {}
 # Track positions seen in the current game (cleared on ucinewgame)
 game_position_history: dict[int, int] = {}  # zobrist_hash -> count
 
-PIECE_VALUES = {
-    chess.PAWN: 100,
-    chess.KNIGHT: 320,
-    chess.BISHOP: 330,
-    chess.ROOK: 500,
-    chess.QUEEN: 900,
-    chess.KING: 0
-}
-
 # Array-based history heuristic size
 HISTORY_TABLE_SIZE = 25000
 
 
 # ======================================================================
-# Search generation â€” plain int, only main thread writes, workers read
+# Search generation Ã¢â‚¬â€ plain int, only main thread writes, workers read
 # ======================================================================
 
 class _SearchControl:
-    """Lightweight stop signaling for Lazy SMP. No locks needed â€”
+    """Lightweight stop signaling for Lazy SMP. No locks needed Ã¢â‚¬â€
     only the main thread writes, workers only read."""
     generation = 1
 
@@ -114,9 +110,9 @@ def return_nn_evaluator_to_pool(evaluator: NNEvaluator):
 # Module-level utility functions (no per-instance state)
 # ======================================================================
 
-def pv_int_to_moves(pv_int: List[int]) -> List[chess.Move]:
-    """Convert integer PV to chess.Move list for UCI output."""
-    return [int_to_move(m) for m in pv_int if m != 0]
+def pv_int_to_uci(pv_int: List[int]) -> List[str]:
+    """Convert integer PV to UCI string list for output."""
+    return [int_to_uci(m) for m in pv_int if m != 0]
 
 
 def clear_game_history():
@@ -154,7 +150,7 @@ def get_draw_score(board: CachedBoard) -> int:
     """
     Return score for draw positions with capped contempt.
     """
-    material = board.material_evaluation()
+    material = board.material_evaluation_full()
     if material > 0:
         return max(-300, -material)
     elif material < 0:
@@ -162,59 +158,46 @@ def get_draw_score(board: CachedBoard) -> int:
     return 0
 
 
-def push_move(board: CachedBoard, move, evaluator: NNEvaluator):
-    """Push move on both evaluator and board using the unified interface."""
-    evaluator.push_with_board(board, move)
-
-
 def push_move_int(board: CachedBoard, move_int: int, evaluator: NNEvaluator):
     """Push integer move on both evaluator and board."""
-    move = int_to_move(move_int)
-    evaluator.push_with_board(board, move)
+    evaluator.push_with_board(board, move_int)
 
 
-def see(board: CachedBoard, move: chess.Move) -> int:
-    """Simplified Static Exchange Evaluation (SEE)."""
-    victim_type = board.get_victim_type(move)
-    attacker_type = board.get_attacker_type(move)
+def see_int(board: CachedBoard, move_int: int) -> int:
+    """Simplified Static Exchange Evaluation (SEE) for integer moves."""
+    victim_type = board.get_victim_type_int(move_int)
+    attacker_type = board.get_attacker_type_int(move_int)
+    _, _, promo = int_to_tuple(move_int)
 
     if victim_type is None:
-        if move.promotion:
-            return PIECE_VALUES.get(move.promotion, 0) - PIECE_VALUES[chess.PAWN]
+        if promo:
+            return PIECE_VALUES.get(promo, 0) - PIECE_VALUES[PAWN]
         return 0
 
     victim_value = PIECE_VALUES.get(victim_type, 0)
     attacker_value = PIECE_VALUES.get(attacker_type, 0)
 
     promotion_gain = 0
-    if move.promotion:
-        promotion_gain = PIECE_VALUES.get(move.promotion, 0) - PIECE_VALUES[chess.PAWN]
+    if promo:
+        promotion_gain = PIECE_VALUES.get(promo, 0) - PIECE_VALUES[PAWN]
 
-    if victim_value >= attacker_value:
-        return victim_value - attacker_value + promotion_gain
-    else:
-        return victim_value - attacker_value + promotion_gain
-
-
-def see_ge(board: CachedBoard, move: chess.Move, threshold: int = 0) -> bool:
-    """Check if SEE value of move is >= threshold."""
-    return see(board, move) >= threshold
+    return victim_value - attacker_value + promotion_gain
 
 
 def see_ge_int(board: CachedBoard, move_int: int, threshold: int = 0) -> bool:
     """Check if SEE value of move is >= threshold (integer move version)."""
-    return see(board, int_to_move(move_int)) >= threshold
+    return see_int(board, move_int) >= threshold
 
 
 def move_score_q_search_int(board: CachedBoard, move_int: int) -> int:
     """Score a move for quiescence search using pre-computed MVV-LVA."""
-    return board.get_mvv_lva_int(move_int)
+    return board.get_mvv_lva_score_int(move_int)
 
 
 def ordered_moves_q_search_int(board: CachedBoard, last_capture_sq: int = -1) -> List[int]:
     """Return legal moves for quiescence search as integers."""
-    board.precompute_move_info_int()
     moves_int = board.get_legal_moves_int()
+    board.precompute_move_info_int(moves_int)
     moves_with_scores = []
 
     for m in moves_int:
@@ -251,11 +234,11 @@ def validate_pv_int(board: CachedBoard, pv_int: List[int]) -> List[int]:
         for move_int in pv_int:
             if move_int == 0:
                 break
-            move = int_to_move(move_int)
-            if move not in board.get_legal_moves_list():
+            legal_moves = board.get_legal_moves_int()
+            if move_int not in legal_moves:
                 break
             validated.append(move_int)
-            board.push(move)
+            board.push(move_int)
             pushed += 1
     finally:
         for _ in range(pushed):
@@ -263,19 +246,19 @@ def validate_pv_int(board: CachedBoard, pv_int: List[int]) -> List[int]:
     return validated
 
 
-def pv_to_san(board: CachedBoard, pv: List[chess.Move]) -> str:
-    """Convert a PV (list of moves) to SAN notation string."""
+def pv_to_san(board: CachedBoard, pv_int: List[int]) -> str:
+    """Convert a PV (list of integer moves) to SAN notation string."""
     san_moves = []
     temp_board = board.copy(stack=False)
-    for i, move in enumerate(pv):
-        if temp_board.turn == chess.WHITE:
+    for i, move_int in enumerate(pv_int):
+        if temp_board.turn == WHITE:
             move_num = temp_board.fullmove_number
             san_moves.append(f"{move_num}.")
         elif i == 0:
             move_num = temp_board.fullmove_number
             san_moves.append(f"{move_num}...")
-        san_moves.append(temp_board.san(move))
-        temp_board.push(move)
+        san_moves.append(temp_board.san(move_int))
+        temp_board.push(move_int)
     return " ".join(san_moves)
 
 
@@ -297,13 +280,14 @@ def tokenize_san_string(san_string: str) -> list[str]:
     return san_moves
 
 
-def pv_from_san_string(fen: str, san_string: str) -> list[chess.Move]:
+def pv_from_san_string(fen: str, san_string: str) -> List[int]:
+    """Parse SAN string into list of integer moves."""
     board = CachedBoard(fen)
     pv = []
     for ply, san in enumerate(tokenize_san_string(san_string)):
-        move = board.parse_san(san)
-        pv.append(move)
-        board.push(move)
+        move_int = board.parse_san(san)
+        pv.append(move_int)
+        board.push(move_int)
     return pv
 
 
@@ -377,7 +361,7 @@ def _make_qs_stats():
 
 
 # ======================================================================
-# ChessEngine class â€” per-instance state, no thread-local hacks
+# ChessEngine class Ã¢â‚¬â€ per-instance state, no thread-local hacks
 # ======================================================================
 
 class ChessEngine:
@@ -389,7 +373,7 @@ class ChessEngine:
     soft_stop flag, and NN evaluator reference.
 
     Shared state (TT, nn_eval_cache, game_position_history, TimeControl)
-    remains at module level â€” this is intentional for Lazy SMP communication.
+    remains at module level Ã¢â‚¬â€ this is intentional for Lazy SMP communication.
     """
 
     def __init__(self, nn_eval: Optional[NNEvaluator] = None,
@@ -415,7 +399,7 @@ class ChessEngine:
         # Per-instance stop flag
         self.soft_stop = False
 
-        # NN evaluator (per-instance â€” each thread needs its own incremental state)
+        # NN evaluator (per-instance Ã¢â‚¬â€ each thread needs its own incremental state)
         self.nn_evaluator = nn_eval if nn_eval is not None else nn_evaluator
 
         # Lazy SMP stop signaling
@@ -427,7 +411,7 @@ class ChessEngine:
         self._rng = random.Random()
         # Per-instance random for evaluation noise (Lazy SMP diversity)
         self._eval_rng = random.Random()
-        self._eval_noise = 5  # Â±5 centipawns noise range
+        self._eval_noise = 5  # Ã‚Â±5 centipawns noise range
 
     def reset_for_search(self):
         """Reset per-search state. Call before each new search."""
@@ -437,7 +421,7 @@ class ChessEngine:
         self.soft_stop = False
         self.completed_depth = 0
         self._qs_stats = _make_qs_stats()
-        # Don't reset kpi or _diag â€” they accumulate across searches for reporting
+        # Don't reset kpi or _diag Ã¢â‚¬â€ they accumulate across searches for reporting
 
     def reset_kpi(self):
         """Reset KPI counters."""
@@ -459,7 +443,7 @@ class ChessEngine:
         """Set evaluation noise for search diversity.
 
         Args:
-            noise_range: Max noise in centipawns (e.g., 5 means Â±5cp)
+            noise_range: Max noise in centipawns (e.g., 5 means Ã‚Â±5cp)
             seed: Random seed. Different workers should use different seeds.
         """
         self._eval_noise = noise_range
@@ -544,7 +528,7 @@ class ChessEngine:
             else:
                 return 0
         self.kpi['pos_eval'] += 1
-        return self._add_eval_noise(board.material_evaluation())
+        return self._add_eval_noise(board.material_evaluation_full())
 
     def evaluate_nn(self, board: CachedBoard, skip_game_over: bool = False) -> int:
         """Evaluate using neural network with cache."""
@@ -581,7 +565,7 @@ class ChessEngine:
                 score += 8000
 
         if is_capture:
-            score += board.get_mvv_lva_int(move_int)
+            score += board.get_mvv_lva_score_int(move_int)
 
         if move_int < HISTORY_TABLE_SIZE:
             score += self.history_heuristic[move_int]
@@ -594,10 +578,11 @@ class ChessEngine:
     def ordered_moves_int(self, board: CachedBoard, depth: int,
                           pv_move_int: int = 0, tt_move_int: int = 0) -> List[int]:
         """Return legal moves as integers, ordered by expected quality."""
-        board.precompute_move_info_int()
+        moves_int = board.get_legal_moves_int()
+        board.precompute_move_info_int(moves_int)
 
         scored_moves = []
-        for move_int in board.get_legal_moves_int():
+        for move_int in moves_int:
             if move_int == tt_move_int and tt_move_int != 0:
                 score = 1000000
             elif move_int == pv_move_int and pv_move_int != 0:
@@ -636,8 +621,7 @@ class ChessEngine:
                 self._diag_warn("pv_illegal_moves", f"PV move {move_int} illegal at depth {len(pv)}")
                 break
             pv.append(move_int)
-            move = int_to_move(move_int)
-            push_move(board, move, self.nn_evaluator)
+            push_move_int(board, move_int, self.nn_evaluator)
         # Restore board state
         for _ in range(len(pv)):
             board.pop()
@@ -730,7 +714,7 @@ class ChessEngine:
                 self.kpi['beta_cutoffs'] += 1
                 return stand_pat, []
 
-            if stand_pat + PIECE_VALUES[chess.QUEEN] < alpha:
+            if stand_pat + PIECE_VALUES[QUEEN] < alpha:
                 return stand_pat, []
 
             if (not is_nn_eval and config.NN_ENABLED
@@ -759,7 +743,6 @@ class ChessEngine:
         if time_critical:
             move_limit = min(config.MAX_QS_MOVES_TIME_CRITICAL, move_limit)
 
-        board.precompute_move_info_int()
         moves_searched = 0
         all_moves = ordered_moves_q_search_int(board, last_capture_sq)
 
@@ -792,12 +775,11 @@ class ChessEngine:
             if is_check:
                 is_capture_move = board.is_capture_int(move_int)
 
-            move = int_to_move(move_int)
             should_update_nn = q_depth <= config.QS_DEPTH_MAX_NN_EVAL
             if should_update_nn:
-                push_move(board, move, self.nn_evaluator)
+                push_move_int(board, move_int, self.nn_evaluator)
             else:
-                board.push(move)
+                board.push(move_int)
 
             child_capture_sq = to_sq if is_capture_move else -1
             score, child_pv = self.quiescence(board, -beta, -alpha, q_depth + 1, child_capture_sq)
@@ -915,9 +897,11 @@ class ChessEngine:
         # Null Move Pruning
         if (depth >= config.NULL_MOVE_MIN_DEPTH
                 and not in_check
-                and board.has_non_pawn_material()
+                and board.has_non_pawn_material(board.turn)
                 and board.occupied.bit_count() > 6):
-            push_move(board, chess.Move.null(), self.nn_evaluator)
+            # Null move represented as 0 (from=0, to=0, promo=0)
+            NULL_MOVE_INT = 0
+            push_move_int(board, NULL_MOVE_INT, self.nn_evaluator)
             score, _ = self.negamax(board, depth - 1 - config.NULL_MOVE_REDUCTION, -beta, -beta + 1,
                                     allow_singular=False)
             score = -score
@@ -949,8 +933,7 @@ class ChessEngine:
                     continue
                 if move_count >= 3:
                     break
-                move = int_to_move(move_int)
-                push_move(board, move, self.nn_evaluator)
+                push_move_int(board, move_int, self.nn_evaluator)
                 score, _ = self.negamax(board, reduced_depth, -reduced_beta - 1, -reduced_beta,
                                         allow_singular=False)
                 score = -score
@@ -1021,8 +1004,7 @@ class ChessEngine:
                     self.kpi['futility_prunes'] += 1
                     continue
 
-            move = int_to_move(move_int)
-            push_move(board, move, self.nn_evaluator)
+            push_move_int(board, move_int, self.nn_evaluator)
             child_in_check = board.is_check()
 
             # Extensions
@@ -1117,7 +1099,7 @@ class ChessEngine:
         return max_eval, best_pv
 
     # ------------------------------------------------------------------
-    # find_best_move â€” the main iterative deepening entry point
+    # find_best_move Ã¢â‚¬â€ the main iterative deepening entry point
     # ------------------------------------------------------------------
 
     def find_best_move(self, fen: str, max_depth: int = config.MAX_NEGAMAX_DEPTH,
@@ -1143,7 +1125,7 @@ class ChessEngine:
 
         Returns:
             Tuple of (best_move_int, score, pv_int, nodes, nps)
-            Returns ints â€” caller converts to chess.Move if needed.
+            Returns ints Ã¢â‚¬â€ returns integers for UCI conversion.
         """
         # Initialize time control
         if not use_existing_time_control:
@@ -1188,9 +1170,9 @@ class ChessEngine:
         # Check for stop before NN reset
         if TimeControl.stop_search and not TimeControl.is_ponder_search:
             diag_print(f"DEBUG: Stop received before NN reset, aborting")
-            legal = board.get_legal_moves_list()
+            legal = board.get_legal_moves_int()
             if legal:
-                return move_to_int(legal[0]), 0, [move_to_int(legal[0])], 0, 0
+                return legal[0], 0, [legal[0]], 0, 0
             return 0, 0, [], 0, 0
 
         self.nn_evaluator.reset(board)
@@ -1203,23 +1185,22 @@ class ChessEngine:
         if time_limit and time_limit < 0.15:
             self._diag_warn("critical_time_search",
                             f"time_limit={time_limit:.3f}s, doing emergency search")
-            legal_moves = board.get_legal_moves_list()
+            legal_moves = board.get_legal_moves_int()
             if legal_moves:
-                best_move = legal_moves[0]
+                best_move_int = legal_moves[0]
                 best_score = -config.MAX_SCORE
-                for move in legal_moves[:10]:
-                    push_move(board, move, self.nn_evaluator)
+                for move_int in legal_moves[:10]:
+                    push_move_int(board, move_int, self.nn_evaluator)
                     score = -self.evaluate_nn(board) if config.NN_ENABLED else -self.evaluate_classical(
                         board)
                     board.pop()
                     self.nn_evaluator.pop()
                     if score > best_score:
                         best_score = score
-                        best_move = move
+                        best_move_int = move_int
                 elapsed = time.perf_counter() - TimeControl.start_time
                 nps = int(10 / elapsed) if elapsed > 0 else 0
-                bm_int = move_to_int(best_move)
-                return bm_int, best_score, [bm_int], 10, nps
+                return best_move_int, best_score, [best_move_int], 10, nps
             return 0, 0, [], 0, 0
 
         # Start iterative deepening
@@ -1335,8 +1316,7 @@ class ChessEngine:
                         search_aborted = True
                         break
 
-                    move = int_to_move(move_int)
-                    push_move(board, move, self.nn_evaluator)
+                    push_move_int(board, move_int, self.nn_evaluator)
 
                     if is_draw_by_repetition(board):
                         score = get_draw_score(board)
@@ -1427,8 +1407,7 @@ class ChessEngine:
                             search_aborted = True
                             break
 
-                        move = int_to_move(move_int)
-                        push_move(board, move, self.nn_evaluator)
+                        push_move_int(board, move_int, self.nn_evaluator)
                         score, child_pv = self.negamax(board, depth - 1, -beta, -alpha,
                                                        allow_singular=True)
                         score = -score
@@ -1491,7 +1470,7 @@ class ChessEngine:
                 # Callback: report intermediate result
                 if on_depth_complete:
                     on_depth_complete(depth, best_move_int, best_score, best_pv,
-                                     self.kpi['nodes'] - nodes_start)
+                                      self.kpi['nodes'] - nodes_start)
 
             if search_aborted:
                 break
@@ -1501,15 +1480,21 @@ class ChessEngine:
                 elapsed = time.perf_counter() - TimeControl.start_time
                 nps = int((self.kpi['nodes'] - nodes_start) / elapsed) if elapsed > 0 else 0
                 validated_pv = validate_pv_int(board, best_pv)
-                pv_uci = ' '.join(int_to_move(m).uci() for m in validated_pv)
+                pv_uci = ' '.join(int_to_uci(m) for m in validated_pv)
                 print(
                     f"info depth {depth} score cp {best_score} nodes {self.kpi['nodes']} nps {nps} pv {pv_uci}",
                     flush=True)
 
             # Early break for testing
             if best_move_int != 0 and expected_best_moves is not None:
-                best_move = int_to_move(best_move_int)
-                if best_move in expected_best_moves:
+                # Convert expected moves to ints if they aren't already
+                expected_ints = set()
+                for m in expected_best_moves:
+                    if isinstance(m, int):
+                        expected_ints.add(m)
+                    else:
+                        expected_ints.add(move_to_int_from_obj(m))
+                if best_move_int in expected_ints:
                     break
 
         # Shallow search diagnostics
@@ -1522,9 +1507,9 @@ class ChessEngine:
                 self._diag["shallow_search_d2"] += 1
             elif max_completed_depth == 3:
                 self._diag["shallow_search_d3"] += 1
-            best_move_for_diag = int_to_move(best_move_int) if best_move_int != 0 else None
+            best_move_uci = int_to_uci(best_move_int) if best_move_int != 0 else None
             diag_print(f"SHALLOW_SEARCH: bestmove selected at depth {max_completed_depth} "
-                       f"(tactical={is_tactical_position}, move={best_move_for_diag})")
+                       f"(tactical={is_tactical_position}, move={best_move_uci})")
 
         # QS stats
         if self._qs_stats["max_depth_reached"] > config.MAX_QS_DEPTH // 2 or self._qs_stats[
@@ -1545,53 +1530,55 @@ class ChessEngine:
 
             board = CachedBoard(fen)
             self.nn_evaluator.reset(board)
-            legal = board.get_legal_moves_list()
+            legal = board.get_legal_moves_int()
 
             if legal:
-                best_move_int = move_to_int(legal[0])
+                best_move_int = legal[0]
                 best_score = -config.MAX_SCORE
 
                 self._diag_warn("fallback_shallow_search",
                                 f"Shallow search with {len(legal)} moves")
 
                 fallback_aborted = False
-                for move in legal:
+                for move_int in legal:
                     if TimeControl.stop_search or self._generation_stop():
                         diag_print(f"Fallback aborted by stop signal")
                         fallback_aborted = True
                         break
 
-                    self.nn_evaluator.push_with_board(board, move)
+                    push_move_int(board, move_int, self.nn_evaluator)
 
                     if board.is_checkmate():
                         score = config.MAX_SCORE - board.ply()
                         board.pop()
                         self.nn_evaluator.pop()
-                        best_move_int = move_to_int(move)
+                        best_move_int = move_int
                         best_score = score
                         best_pv = [best_move_int]
-                        diag_print(f"Fallback found checkmate: {move.uci()}")
+                        diag_print(f"Fallback found checkmate: {int_to_uci(move_int)}")
                         break
 
                     if board.is_stalemate() or board.is_insufficient_material():
                         score = 0
                     else:
+                        # Simple 1-ply lookahead for opponent
                         opp_best = config.MAX_SCORE
                         opp_moves_checked = 0
                         max_opp_moves = 8
 
-                        board.precompute_move_info_int()
-                        for opp_move in board.get_legal_moves_list():
+                        opp_moves = board.get_legal_moves_int()
+                        board.precompute_move_info_int(opp_moves)
+                        for opp_move_int in opp_moves:
                             if TimeControl.stop_search or self._generation_stop():
                                 break
-                            opp_move_int = move_to_int(opp_move)
+                            _, _, promo = int_to_tuple(opp_move_int)
                             is_tactical = (board.is_capture_int(opp_move_int) or
                                            board.gives_check_int(opp_move_int) or
-                                           opp_move.promotion is not None)
+                                           promo != 0)
                             if not is_tactical and opp_moves_checked > 0:
                                 continue
 
-                            push_move(board, opp_move, self.nn_evaluator)
+                            push_move_int(board, opp_move_int, self.nn_evaluator)
                             if board.is_checkmate():
                                 opp_score = config.MAX_SCORE - board.ply()
                             else:
@@ -1613,13 +1600,13 @@ class ChessEngine:
 
                     if score > best_score:
                         best_score = score
-                        best_move_int = move_to_int(move)
+                        best_move_int = move_int
 
                 best_pv = [best_move_int]
                 if not fallback_aborted:
                     diag_print(
                         f"Shallow fallback: {len(legal)} moves, "
-                        f"best={int_to_move(best_move_int).uci()} score={best_score}cp")
+                        f"best={int_to_uci(best_move_int)} score={best_score}cp")
             else:
                 best_move_int = 0
                 best_score = self.evaluate_classical(board)
@@ -1675,10 +1662,17 @@ def _get_main_engine() -> ChessEngine:
 
 def find_best_move(fen, max_depth=config.MAX_NEGAMAX_DEPTH, time_limit=None, clear_tt=True,
                    expected_best_moves=None, use_existing_time_control=False) -> \
-        Tuple[Optional[chess.Move], int, List[chess.Move], int, float]:
+        Tuple[int, int, List[int], int, float]:
     """
-    Backward-compatible wrapper: creates/reuses main ChessEngine,
-    calls find_best_move, converts ints to chess.Move for the caller.
+    Main search wrapper: creates/reuses main ChessEngine and calls find_best_move.
+
+    Returns:
+        Tuple of (best_move_int, score, pv_int, nodes, nps)
+        - best_move_int: Integer move (0 for null/no move)
+        - score: Evaluation in centipawns
+        - pv_int: Principal variation as list of integer moves
+        - nodes: Number of nodes searched
+        - nps: Nodes per second
     """
     engine = _get_main_engine()
     # Ensure main engine uses the global nn_evaluator
@@ -1689,12 +1683,10 @@ def find_best_move(fen, max_depth=config.MAX_NEGAMAX_DEPTH, time_limit=None, cle
         expected_best_moves=expected_best_moves,
         use_existing_time_control=use_existing_time_control)
 
-    # Convert to chess.Move
-    best_move = int_to_move(bm_int) if bm_int != 0 else chess.Move.null()
     board = CachedBoard(fen)
-    best_pv_moves = pv_int_to_moves(validate_pv_int(board, pv_int))
+    validated_pv = validate_pv_int(board, pv_int)
 
-    return best_move, score, best_pv_moves, nodes, nps_val
+    return bm_int, score, validated_pv, nodes, nps_val
 
 
 def diag_summary() -> str:
@@ -1714,21 +1706,20 @@ def main():
     while True:
         try:
             fen = input("FEN: ").strip()
-            if fen.lower() == "exit":
+            if fen.lower() in ("exit", "quit"):
                 break
             if fen == "":
-                print("Type 'exit' to quit")
+                print("Type 'exit' or 'quit' to quit")
                 continue
 
             engine.reset_kpi()
             start_time = time.perf_counter()
             bm_int, score, pv_int, nodes, nps_val = engine.find_best_move(fen, max_depth=20,
-                                                                           time_limit=5)
+                                                                          time_limit=5)
             end_time = time.perf_counter()
 
             elapsed_time = end_time - start_time
-            best_move = int_to_move(bm_int) if bm_int != 0 else None
-            best_pv = pv_int_to_moves(pv_int)
+            best_move_uci = int_to_uci(bm_int) if bm_int != 0 else None
 
             print("\n--- Search KPIs ---")
             for key, value in engine.kpi.items():
@@ -1737,10 +1728,10 @@ def main():
             print(f"nps: {nps_val}")
 
             board = CachedBoard(fen)
-            print("\nBest move:", best_move)
+            print("\nBest move:", best_move_uci)
             print("Evaluation:", score)
-            print("PV:", pv_to_san(board, best_pv))
-            print("PV (UCI):", " ".join(m.uci() for m in best_pv))
+            print("PV:", pv_to_san(board, pv_int))
+            print("PV (UCI):", " ".join(int_to_uci(m) for m in pv_int))
             print("-------------------\n")
 
         except KeyboardInterrupt:

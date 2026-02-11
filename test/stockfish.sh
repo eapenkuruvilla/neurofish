@@ -50,7 +50,7 @@ CMD_DIR="$(dirname "$0")"
 CUTECHESS_PATH="$CMD_DIR"/../../cutechess
 OUTFILE_TEMPLATE="/tmp/fileXXXXXX.pgn"
 OUTFILE=$(mktemp --dry-run "$OUTFILE_TEMPLATE")
-THREADS=7
+THREADS=$(python -c "import config; print(config.THREADS)")
 
 echo "PGN File: $OUTFILE"
 python3 -c "import config"

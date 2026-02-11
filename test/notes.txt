@@ -29,3 +29,4 @@ source .venv/bin/activate
 02/1026
 2T=+80, WAC-257, nps:12233
 After removing chess.Move - WAC:256
+After eliminating python chess WAC=256

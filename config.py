@@ -62,7 +62,7 @@ NN_ENABLED = _env_bool('NN_ENABLED', True)
 FULL_NN_EVAL_FREQ = _env_int('FULL_NN_EVAL_FREQ', 3000)  # Increase to 50_000 after initial testing
 
 # TODO retest
-L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "INT16")  # Options: "NONE" (FP32), "INT8", "INT16"
+L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "INT8")  # Options: "NONE" (FP32), "INT8", "INT16"
 
 # Note when NN related parameters are optimized, use real games as positional understanding will be reflected.
 # The non-NN parameters are primarily about tactics, and they can be quickly tuned using test positions.
@@ -187,11 +187,11 @@ def configure_multi_core_blas() -> None:
         os.environ["OPENBLAS_NUM_THREADS"] = "1"
         os.environ["MKL_NUM_THREADS"] = "1"
         os.environ["OMP_NUM_THREADS"] = "1"
-        print(f"info string Disabling multi-threaded BLAS", flush=True)
+        #print(f"info string Disabling multi-threaded BLAS", flush=True)
     else:
         del os.environ['OPENBLAS_NUM_THREADS']
         del os.environ['MKL_NUM_THREADS']
         del os.environ['OMP_NUM_THREADS']
-        print(f"info string Allowing multi-threaded BLAS", flush=True)
+        #print(f"info string Allowing multi-threaded BLAS", flush=True)
 
 configure_multi_core_blas()

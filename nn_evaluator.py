@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
 from typing import Tuple
-import chess
 
-from cached_board import CachedBoard, move_to_int
+from cached_board import (
+    CachedBoard, int_to_tuple,
+    WHITE, BLACK,
+)
 from config import MAX_SCORE
 from nn_inference import NNUEIncrementalUpdater
 from nn_inference import load_model
@@ -35,15 +37,15 @@ class NNEvaluator(ABC):
     """
 
     @abstractmethod
-    def push(self, board_before_push: CachedBoard, move: chess.Move):
+    def push(self, board_before_push: CachedBoard, move_int: int):
         """
         Update internal state for a move. Does NOT modify the board.
 
         Args:
             board_before_push: Board state BEFORE the move
-            move: Move being made
+            move_int: Move being made (as integer)
 
-        Note: Caller must call board.push(move) separately after this.
+        Note: Caller must call board.push(move_int) separately after this.
         """
         pass
 
@@ -56,7 +58,7 @@ class NNEvaluator(ABC):
         """
         pass
 
-    def push_with_board(self, board: CachedBoard, move: chess.Move):
+    def push_with_board(self, board: CachedBoard, move_int: int):
         """
         Update both evaluator state and board for a move.
         This is the preferred method for making moves during search.
@@ -66,12 +68,10 @@ class NNEvaluator(ABC):
 
         Args:
             board: Board state BEFORE the move (will be modified)
-            move: Move being made
-            :param move:
-            :param board:
+            move_int: Move being made (as integer)
         """
-        self.push(board, move)
-        board.push(move)
+        self.push(board, move_int)
+        board.push(move_int)
 
     @abstractmethod
     def reset(self, board: CachedBoard):
@@ -189,7 +189,7 @@ class NNUEEvaluator(NNEvaluator):
         white_feat, black_feat = self.updater.get_features_unsorted()
         self.inference.refresh_accumulator(white_feat, black_feat)
 
-    def push(self, board_before_push: CachedBoard, move: chess.Move):
+    def push(self, board_before_push: CachedBoard, move_int: int):
         """
         Update internal state for a move. Does NOT modify the board.
 
@@ -199,11 +199,11 @@ class NNUEEvaluator(NNEvaluator):
         Uses lazy accumulator refresh for king moves.
         """
         # Get pre-push data
-        is_white_king_move, is_black_king_move, change_record = self.updater.update_pre_push(board_before_push, move)
+        is_white_king_move, is_black_king_move, change_record = self.updater.update_pre_push(board_before_push, move_int)
 
         # Create temporary board to get post-push state
         temp_board = board_before_push.copy()
-        temp_board.push(move)
+        temp_board.push(move_int)
 
         # Complete the update
         self.updater.update_post_push(temp_board, is_white_king_move, is_black_king_move, change_record)
@@ -219,7 +219,7 @@ class NNUEEvaluator(NNEvaluator):
                 change_record['black_removed']
             )
 
-    def push_with_board(self, board: CachedBoard, move: chess.Move):
+    def push_with_board(self, board: CachedBoard, move_int: int):
         """
         Efficiently update both evaluator state and board for a move.
         Uses NNUE's two-phase update for optimal performance.
@@ -230,18 +230,13 @@ class NNUEEvaluator(NNEvaluator):
         OPTIMIZATION: Uses cached move info when available to eliminate
         piece_at() calls in update_pre_push.
 
-        OPTIMIZATION: Also uses push_with_info() to eliminate redundant
+        OPTIMIZATION: Also uses push_with_info_int() to eliminate redundant
         is_en_passant(), is_castling(), and _get_captured_piece() calls in board.push().
 
         Args:
             board: Board state BEFORE the move (will be modified)
-            move: Move being made
-            :param move:
-            :param board:
+            move_int: Move being made (as integer)
         """
-        # Try to get cached move info to avoid piece_at() calls
-        move_int = move_to_int(move)
-
         # Check if we have cached move info
         cache = board._cache_stack[-1] if board._cache_stack else None
         use_fast_path = (cache is not None and
@@ -258,22 +253,18 @@ class NNUEEvaluator(NNEvaluator):
             captured_color = cache.move_captured_piece_color_int.get(move_int)
 
             # Before board.push() - use fast version
-            is_white_king_move, is_black_king_move, change_record = self.updater.update_pre_push_fast(move,
-                                                                                                      attacker_type,
-                                                                                                      piece_color,
-                                                                                                      is_en_passant,
-                                                                                                      is_castling,
-                                                                                                      captured_type,
-                                                                                                      captured_color)
+            is_white_king_move, is_black_king_move, change_record = self.updater.update_pre_push_fast(
+                move_int, attacker_type, piece_color, is_en_passant, is_castling,
+                captured_type, captured_color)
 
             # Push the board using cached info (no redundant lookups!)
-            board.push_with_info(move, move_int, is_en_passant, is_castling,
-                                 captured_type, captured_color)
+            board.push_with_info_int(move_int, is_en_passant, is_castling,
+                                     captured_type, captured_color)
         else:
             # Slow path: compute piece info via piece_at() calls
-            is_white_king_move, is_black_king_move, change_record = self.updater.update_pre_push(board, move)
+            is_white_king_move, is_black_king_move, change_record = self.updater.update_pre_push(board, move_int)
             # Slow path: regular push (computes is_en_passant, is_castling, etc.)
-            board.push(move)
+            board.push(move_int)
 
         # After board.push()
         self.updater.update_post_push(board, is_white_king_move, is_black_king_move, change_record)
@@ -290,75 +281,13 @@ class NNUEEvaluator(NNEvaluator):
                 change_record['black_removed']
             )
 
-    def push_with_board_int(self, board: CachedBoard, move: chess.Move, move_int: int):
-        """
-        OPTIMIZATION: Variant of push_with_board that accepts pre-computed
-        move_int to avoid redundant conversion.
-
-        OPTIMIZATION: Also uses push_with_info() to eliminate redundant
-        is_en_passant(), is_castling(), and _get_captured_piece() calls.
-
-        Use this when you already have the integer move from move ordering.
-
-        Args:
-            board: Board state BEFORE the move (will be modified)
-            move: The chess.Move object
-            move_int: Pre-computed integer representation of the move
-        """
-        # Check if we have cached move info
-        cache = board._cache_stack[-1] if board._cache_stack else None
-        use_fast_path = (cache is not None and
-                         cache.move_attacker_type_int is not None and
-                         move_int in cache.move_attacker_type_int)
-
-        if use_fast_path:
-            # Fast path: use cached move info
-            attacker_type = cache.move_attacker_type_int.get(move_int)
-            piece_color = cache.move_piece_color_int.get(move_int, board.turn)
-            is_en_passant = cache.move_is_en_passant_int.get(move_int, False)
-            is_castling = cache.move_is_castling_int.get(move_int, False)
-            captured_type = cache.move_captured_piece_type_int.get(move_int)
-            captured_color = cache.move_captured_piece_color_int.get(move_int)
-
-            # Before board.push() - use fast version
-            is_white_king_move, is_black_king_move, change_record = self.updater.update_pre_push_fast(move,
-                                                                                                      attacker_type,
-                                                                                                      piece_color,
-                                                                                                      is_en_passant,
-                                                                                                      is_castling,
-                                                                                                      captured_type,
-                                                                                                      captured_color)
-
-            # Push the board using cached info (no redundant lookups!)
-            board.push_with_info(move, move_int, is_en_passant, is_castling,
-                                 captured_type, captured_color)
-        else:
-            # Slow path: compute piece info via piece_at() calls
-            is_white_king_move, is_black_king_move, change_record = self.updater.update_pre_push(board, move)
-            # Slow path: regular push
-            board.push(move)
-
-        # After board.push()
-        self.updater.update_post_push(board, is_white_king_move, is_black_king_move, change_record)
-
-        # Update accumulators - lazy refresh for king moves
-        if is_white_king_move or is_black_king_move:
-            self.inference.mark_dirty()
-        else:
-            self.inference.update_accumulator(
-                change_record['white_added'],
-                change_record['white_removed'],
-                change_record['black_added'],
-                change_record['black_removed']
-            )
-
-    def update_pre_push(self, board_before_push: CachedBoard, move: chess.Move) -> Tuple:
+    def update_pre_push(self, board_before_push: CachedBoard, move_int: int) -> Tuple:
         """
         Returns:
             Tuple of (is_white_king_move, is_black_king_move, change_record)
-            Pass these to update_post_push() after calling board.push(move).
+            Pass these to update_post_push() after calling board.push(move_int).
         """
-        return self.updater.update_pre_push(board_before_push, move)
+        return self.updater.update_pre_push(board_before_push, move_int)
 
     def update_post_push(self, board_after_push: CachedBoard,
                          is_white_king_move: bool,
@@ -422,7 +351,7 @@ class NNUEEvaluator(NNEvaluator):
 
         Provides feature_getter for lazy refresh when needed.
         """
-        stm = board.turn == chess.WHITE
+        stm = board.turn == WHITE
         # Provide feature getter for lazy refresh
         return self.inference.evaluate_incremental(stm, self.updater.get_features_unsorted)
 
@@ -452,6 +381,8 @@ class NNUEEvaluator(NNEvaluator):
 """
 # Recommended: Use push_with_board() for unified interface:
 
+from cached_board import CachedBoard, uci_to_int
+
 board = CachedBoard()
 evaluator = NNEvaluator.create(board, "NNUE", "model/nnue.pt")
 
@@ -460,8 +391,8 @@ score = evaluator.evaluate_centipawns(board)
 print(f"Initial: {score} cp")
 
 # Make moves using unified interface (updates both evaluator and board)
-move = chess.Move.from_uci("e2e4")
-evaluator.push_with_board(board, move)  # Updates evaluator AND board
+move_int = uci_to_int("e2e4")
+evaluator.push_with_board(board, move_int)  # Updates evaluator AND board
 score = evaluator.evaluate_centipawns(board)
 print(f"After e4: {score} cp")
 
@@ -474,9 +405,9 @@ print(f"After undo: {score} cp")
 
 # Alternative: Separate push() and board.push() (if you need to do something between):
 
-move = chess.Move.from_uci("d2d4")
-evaluator.push(board, move)  # Update evaluator state only
-board.push(move)             # Update board state separately
+move_int = uci_to_int("d2d4")
+evaluator.push(board, move_int)  # Update evaluator state only
+board.push(move_int)             # Update board state separately
 score = evaluator.evaluate_centipawns(board)
 print(f"After d4: {score} cp")
 
@@ -511,9 +442,9 @@ class ChessEngine:
         best_score = -float('inf')
         best_pv = []
 
-        for move in board.legal_moves:
+        for move_int in board.legal_moves:
             # Unified push - updates both evaluator and board
-            self.evaluator.push_with_board(board, move)
+            self.evaluator.push_with_board(board, move_int)
 
             score, pv = self._negamax(board, depth - 1, -beta, -alpha)
             score = -score
@@ -524,7 +455,7 @@ class ChessEngine:
 
             if score > best_score:
                 best_score = score
-                best_pv = [move] + pv
+                best_pv = [move_int] + pv
 
             alpha = max(alpha, score)
             if alpha >= beta:

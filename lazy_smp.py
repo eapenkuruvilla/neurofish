@@ -19,10 +19,8 @@ import time
 from typing import List, Tuple, Optional
 from queue import Queue, Empty
 
-import chess
-
 import config
-from cached_board import CachedBoard, int_to_move, move_to_int
+from cached_board import CachedBoard, int_to_uci
 
 
 def _mp_diag_print(msg: str):
@@ -155,7 +153,7 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
         result = (worker_id, move_int, score, pv_copy, nodes, depth, generation)
         result_queue.put(result)
         _mp_diag_print(f"Worker {worker_id} completed depth {depth}: "
-                       f"{int_to_move(move_int).uci()} score={score}")
+                       f"{int_to_uci(move_int)} score={score}")
 
     try:
         engine.find_best_move(
@@ -177,13 +175,12 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
 
 def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[float] = None,
                             clear_tt: bool = True,
-                            use_existing_time_control: bool = False) -> Tuple[
-    Optional[chess.Move], int, List[chess.Move], int, float]:
+                            use_existing_time_control: bool = False) -> Tuple[int, int, List[int], int, float]:
     """
     Find best move using Lazy SMP parallel search.
 
     Returns:
-        Tuple of (best_move, score, pv, nodes, nps)
+        Tuple of (best_move_int, score, pv_int, nodes, nps)
     """
     global _worker_threads
 
@@ -196,7 +193,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
 
     from chess_engine import (_SearchControl, TimeControl, transposition_table,
                               qs_transposition_table, nn_eval_cache, control_dict_size,
-                              pv_int_to_moves, validate_pv_int)
+                              pv_int_to_uci, validate_pv_int)
 
     start_time = time.perf_counter()
 
@@ -221,7 +218,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     _SearchControl.generation = new_gen
     current_generation = new_gen
 
-    # Clear TT if requested (main thread only — before spawning workers)
+    # Clear TT if requested (main thread only â€” before spawning workers)
     if clear_tt:
         transposition_table.clear()
         qs_transposition_table.clear()
@@ -231,15 +228,15 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
 
     # Get legal moves to validate results later
     board = CachedBoard(fen)
-    legal_moves = list(board.get_legal_moves_list())
+    legal_moves_int = board.get_legal_moves_int()
 
-    if not legal_moves:
-        return chess.Move.null(), 0, [], 0, 0
+    if not legal_moves_int:
+        return 0, 0, [], 0, 0  # Null move
 
-    # Single legal move — no need to spawn workers
-    if len(legal_moves) == 1:
+    # Single legal move - no need to spawn workers
+    if len(legal_moves_int) == 1:
         _mp_diag_print("Single legal move, returning immediately")
-        return legal_moves[0], 0, [legal_moves[0]], 0, 0
+        return legal_moves_int[0], 0, [legal_moves_int[0]], 0, 0
 
     _mp_diag_print(f"Lazy SMP search gen={current_generation} with {_num_workers} threads")
 
@@ -335,7 +332,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
             if best_result is None or depth > best_result[4]:
                 best_result = (move_int, score, pv, nodes, depth)
                 _mp_diag_print(f"New best from worker {worker_id}: "
-                               f"{int_to_move(move_int).uci()} score={score} depth={depth}")
+                               f"{int_to_uci(move_int)} score={score} depth={depth}")
 
                 # FIX #3: Print basic UCI info without PV validation
                 # (PV will be validated once at the end)
@@ -352,7 +349,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
             elif depth == best_result[4] and score > best_result[1]:
                 best_result = (move_int, score, pv, nodes, depth)
                 _mp_diag_print(f"Better score from worker {worker_id}: "
-                               f"{int_to_move(move_int).uci()} score={score} depth={depth}")
+                               f"{int_to_uci(move_int)} score={score} depth={depth}")
 
         except Empty:
             # Brief sleep to avoid busy-waiting, but short enough to be responsive
@@ -396,29 +393,28 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     # Process results
     if best_result is None:
         _mp_diag_print("No results from workers, using first legal move")
-        return legal_moves[0], 0, [legal_moves[0]], 0, 0
+        return legal_moves_int[0], 0, [legal_moves_int[0]], 0, 0
 
     move_int, score, pv_int, nodes, depth = best_result
-    best_move = int_to_move(move_int)
 
     # Validate move is legal
-    if best_move not in legal_moves:
-        _mp_diag_print(f"ERROR: Best move {best_move.uci()} is illegal!")
-        return legal_moves[0], 0, [legal_moves[0]], 0, 0
+    if move_int not in legal_moves_int:
+        _mp_diag_print(f"ERROR: Best move {int_to_uci(move_int)} is illegal!")
+        return legal_moves_int[0], 0, [legal_moves_int[0]], 0, 0
 
     # FIX #3: Validate PV only once at the end
     board_final = CachedBoard(fen)
-    best_pv = pv_int_to_moves(validate_pv_int(board_final, pv_int))
+    best_pv_int = validate_pv_int(board_final, pv_int)
 
     elapsed = time.perf_counter() - start_time
     nps = int(total_nodes / elapsed) if elapsed > 0 else 0
 
     # Print final info with validated PV
-    pv_uci = ' '.join(m.uci() for m in best_pv)
+    pv_uci = ' '.join(int_to_uci(m) for m in best_pv_int)
     print(f"info depth {depth} score cp {score} nodes {total_nodes} nps {nps} pv {pv_uci}",
           flush=True)
 
-    return best_move, score, best_pv, total_nodes, nps
+    return move_int, score, best_pv_int, total_nodes, nps
 
 
 def stop_parallel_search():
@@ -454,13 +450,13 @@ def main():
                 print("Type 'exit' or 'quit' to quit")
                 continue
 
-            move, score, pv, nodes, nps = parallel_find_best_move(fen, max_depth=20, time_limit=30)
+            move_int, score, pv_int, nodes, nps = parallel_find_best_move(fen, max_depth=20, time_limit=30)
 
             print(f"nodes: {nodes}")
             print(f"nps: {nps}")
-            print(f"Best move: {move}")
+            print(f"Best move: {int_to_uci(move_int)}")
             print(f"Score: {score}")
-            print(f"PV: {' '.join(m.uci() for m in pv)}")
+            print(f"PV: {' '.join(int_to_uci(m) for m in pv_int)}")
             print("-------------------\n")
 
     except (KeyboardInterrupt, EOFError):
