@@ -25,8 +25,8 @@ resign_counter = 0
 # Pondering settings
 PONDER_TIME_LIMIT = 600  # Maximum time for ponder search (safety cap)
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_BOOK_PATH = f"{SCRIPT_DIR}/../book/komodo.bin"
+ROOT_DIR = str(Path(__file__).resolve().parent)
+DEFAULT_BOOK_PATH = f"{ROOT_DIR}/book/komodo.bin"
 
 search_thread = None
 use_book = True

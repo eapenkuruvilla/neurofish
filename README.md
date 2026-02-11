@@ -230,8 +230,8 @@ conda activate neurofish
 |--------------------------------|------------|
 | C++ Board                      | +95        |
 | Cython acceleration            | +107       |
-| Quantization (INT8)            | -89        |
-| Quantization (INT16)           | +95        |
+| Quantization (INT8)            | +178       |
+| Quantization (INT16)           | +107       |
 | Pondering                      | +90        |
 | BLAS multi-core, single thread | +0         |
 

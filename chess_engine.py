@@ -21,10 +21,8 @@ from cached_board import (
 from config import configure_multi_core_blas
 from nn_evaluator import NNUEEvaluator, NNEvaluator
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-HOME_DIR = "neurofish"
-NNUE_MODEL_FILEPATH = SCRIPT_DIR / f"../{HOME_DIR}" / 'model' / 'nnue.pt'
-MODEL_PATH = str(NNUE_MODEL_FILEPATH)
+ROOT_DIR = str(Path(__file__).resolve().parent)
+MODEL_PATH = ROOT_DIR + '/model/nnue.pt'
 
 
 def is_debug_enabled() -> bool:

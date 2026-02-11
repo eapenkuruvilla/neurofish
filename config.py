@@ -66,7 +66,6 @@ MULTI_CORE_BLAS = _env_bool('MULTI_CORE_BLAS', False)
 NN_ENABLED = _env_bool('NN_ENABLED', True)
 FULL_NN_EVAL_FREQ = _env_int('FULL_NN_EVAL_FREQ', 3000)  # Increase to 50_000 after initial testing
 
-# TODO retest
 L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "INT8")  # Options: "NONE" (FP32), "INT8", "INT16"
 
 # Note when NN related parameters are optimized, use real games as positional understanding will be reflected.
