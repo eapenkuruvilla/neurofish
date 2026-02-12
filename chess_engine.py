@@ -418,6 +418,10 @@ class ChessEngine:
         self._noise_table = None  # Pre-computed noise lookup table
         self._move_order_salt = 0  # Worker-specific salt for deterministic move ordering
 
+        # Persistent board instance - reused across searches to avoid
+        # allocation overhead and keep cache pool warm
+        self._board: Optional[CachedBoard] = None
+
     def reset_for_search(self):
         """Reset per-search state. Call before each new search."""
         for i in range(len(self.killer_moves_int)):
@@ -1198,7 +1202,12 @@ class ChessEngine:
 
         # Initialize board and evaluator
         init_start = time.perf_counter()
-        board = CachedBoard(fen)
+        # Reuse persistent board if available, otherwise create new one
+        if self._board is None:
+            self._board = CachedBoard(fen)
+        else:
+            self._board.set_fen(fen)
+        board = self._board
 
         # Check for stop before NN reset
         if TimeControl.stop_search and not TimeControl.is_ponder_search:
@@ -1561,7 +1570,7 @@ class ChessEngine:
             diag_print(f"DEBUG fallback: elapsed={elapsed:.2f}s, stop={TimeControl.stop_search}, "
                        f"soft={self.soft_stop}, time_limit={time_limit}")
 
-            board = CachedBoard(fen)
+            board = self._board
             self.nn_evaluator.reset(board)
             legal = board.get_legal_moves_int()
 

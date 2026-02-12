@@ -7,7 +7,7 @@ set -euo pipefail
 # ----------------------------
 
 if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <oldfish-elo> <games> [--debug|-debug]"
+    echo "Usage: $0 <stockfish-elo> <games> [--debug|-debug]"
     exit 1
 fi
 
@@ -56,8 +56,8 @@ echo "PGN File: $OUTFILE"
 python3 -c "import config"
 
 echo ""$CUTECHESS_PATH"/build/cutechess-cli \
--engine cmd="$CMD_DIR"/../uci.sh name=neurofish ponder option.Threads="$THREADS" "$DEBUG_FLAG" \
--engine cmd="$CMD_DIR"/../../oldfish/uci.sh name=oldfish ponder option.Threads="$THREADS" "$DEBUG_FLAG" \
+-engine cmd="$CMD_DIR"/../uci.sh name=neurofish ponder option.Threads=$THREADS "$DEBUG_FLAG" \
+-engine cmd=stockfish option.UCI_LimitStrength=true option.UCI_Elo="$ELO" name=stockfish"$ELO" \
 -each proto=uci tc=40/120+1 timemargin=9999 \
 -draw movenumber=40 movecount=5 score=50 \
 -resign movecount=3 score=500 twosided=false \
@@ -66,7 +66,7 @@ echo ""$CUTECHESS_PATH"/build/cutechess-cli \
 
 "$CUTECHESS_PATH"/build/cutechess-cli \
 -engine cmd="$CMD_DIR"/../uci.sh name=neurofish ponder option.Threads="$THREADS" "$DEBUG_FLAG" \
--engine cmd="$CMD_DIR"/../../oldfish/uci.sh name=oldfish ponder option.Threads="$THREADS" "$DEBUG_FLAG" \
+-engine cmd=stockfish option.UCI_LimitStrength=true option.UCI_Elo="$ELO" name=stockfish"$ELO" \
 -each proto=uci tc=40/120+1 timemargin=9999 \
 -draw movenumber=40 movecount=5 score=50 \
 -resign movecount=3 score=500 twosided=false \
@@ -75,4 +75,3 @@ echo ""$CUTECHESS_PATH"/build/cutechess-cli \
 
 echo "PGN File: $OUTFILE"
 python3 -c "import config"
-

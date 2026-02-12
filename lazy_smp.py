@@ -417,9 +417,8 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         _mp_diag_print(f"ERROR: Best move {int_to_uci(move_int)} is illegal!")
         return legal_moves_int[0], 0, [legal_moves_int[0]], 0, 0
 
-    # FIX #3: Validate PV only once at the end
-    board_final = CachedBoard(fen)
-    best_pv_int = validate_pv_int(board_final, pv_int)
+    # Validate PV only once at the end
+    best_pv_int = validate_pv_int(board, pv_int)
 
     elapsed = time.perf_counter() - start_time
     nps = int(total_nodes / elapsed) if elapsed > 0 else 0

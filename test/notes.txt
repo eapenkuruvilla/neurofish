@@ -33,3 +33,9 @@ After eliminating python chess WAC=256
 
 02/11/26
 WAC:258, WAC-mp:254
+WAC:262, WAC-mp:257
+WAC:259, WAC-mp:258
+
+02/12/26
+ELO: 2435, T2: - 12
+WAC: 263, WAC-mp: 259

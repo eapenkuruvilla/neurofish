@@ -1,7 +1,10 @@
 /**
  * chess_wrapper.cpp - Implementation of FastBoard wrapper
- * 
+ *
  * Fixed to match Disservin/chess-library actual API
+ *
+ * OPTIMIZATION: Integer-based move methods added to reduce Python object
+ * creation overhead in multi-threaded scenarios.
  */
 
 #include "chess_wrapper.hpp"
@@ -20,7 +23,7 @@ std::string PyMove::uci() const {
     result += static_cast<char>('1' + (from_square / 8));
     result += static_cast<char>('a' + (to_square % 8));
     result += static_cast<char>('1' + (to_square / 8));
-    
+
     if (promotion > 0) {
         const char promo_chars[] = {'\0', '\0', 'n', 'b', 'r', 'q'};
         if (promotion >= 2 && promotion <= 5) {
@@ -61,12 +64,12 @@ std::string FastBoard::fen() const {
 chess::Move FastBoard::to_chess_move(const PyMove& move) {
     chess::Square from = chess::Square(move.from_square);
     chess::Square to = chess::Square(move.to_square);
-    
+
     if (move.promotion > 0) {
         chess::PieceType promo = to_chess_piece_type(move.promotion);
         return chess::Move::make<chess::Move::PROMOTION>(from, to, promo);
     }
-    
+
     return chess::Move::make<chess::Move::NORMAL>(from, to);
 }
 
@@ -74,13 +77,13 @@ PyMove FastBoard::from_chess_move(const chess::Move& move) {
     PyMove result;
     result.from_square = move.from().index();
     result.to_square = move.to().index();
-    
+
     if (move.typeOf() == chess::Move::PROMOTION) {
         result.promotion = from_chess_piece_type(move.promotionType());
     } else {
         result.promotion = 0;
     }
-    
+
     return result;
 }
 
@@ -109,13 +112,36 @@ int FastBoard::from_chess_piece_type(chess::PieceType pt) {
 chess::Move FastBoard::find_move(const PyMove& move) const {
     chess::Movelist moves;
     chess::movegen::legalmoves(moves, board_);
-    
+
     for (const auto& m : moves) {
         if (m.from().index() == move.from_square &&
             m.to().index() == move.to_square) {
             if (move.promotion > 0) {
                 if (m.typeOf() == chess::Move::PROMOTION &&
                     from_chess_piece_type(m.promotionType()) == move.promotion) {
+                    return m;
+                }
+            } else if (m.typeOf() != chess::Move::PROMOTION) {
+                return m;
+            }
+        }
+    }
+    return chess::Move::NO_MOVE;
+}
+
+chess::Move FastBoard::find_move_int(int move_int) const {
+    int from_sq = move_int & 0x3F;
+    int to_sq = (move_int >> 6) & 0x3F;
+    int promo = (move_int >> 12) & 0x7;
+
+    chess::Movelist moves;
+    chess::movegen::legalmoves(moves, board_);
+
+    for (const auto& m : moves) {
+        if (m.from().index() == from_sq && m.to().index() == to_sq) {
+            if (promo > 0) {
+                if (m.typeOf() == chess::Move::PROMOTION &&
+                    from_chess_piece_type(m.promotionType()) == promo) {
                     return m;
                 }
             } else if (m.typeOf() != chess::Move::PROMOTION) {
@@ -148,25 +174,25 @@ PyMove FastBoard::pop() {
     if (move_stack_.empty()) {
         throw std::runtime_error("No moves to pop");
     }
-    
+
     chess::Move last_move = move_stack_.back();
     move_stack_.pop_back();
     board_.unmakeMove(last_move);
-    
+
     return from_chess_move(last_move);
 }
 
 std::vector<PyMove> FastBoard::legal_moves() const {
     chess::Movelist moves;
     chess::movegen::legalmoves(moves, board_);
-    
+
     std::vector<PyMove> result;
     result.reserve(moves.size());
-    
+
     for (const auto& m : moves) {
         result.push_back(from_chess_move(m));
     }
-    
+
     return result;
 }
 
@@ -179,7 +205,7 @@ int FastBoard::legal_moves_count() const {
 bool FastBoard::is_legal(const PyMove& move) const {
     chess::Movelist moves;
     chess::movegen::legalmoves(moves, board_);
-    
+
     for (const auto& m : moves) {
         if (m.from().index() == move.from_square &&
             m.to().index() == move.to_square) {
@@ -195,6 +221,175 @@ bool FastBoard::is_legal(const PyMove& move) const {
     }
     return false;
 }
+
+// ============== INTEGER-BASED METHODS ==============
+
+std::vector<int> FastBoard::legal_moves_int() const {
+    chess::Movelist moves;
+    chess::movegen::legalmoves(moves, board_);
+
+    std::vector<int> result;
+    result.reserve(moves.size());
+
+    for (const auto& m : moves) {
+        int from_sq = m.from().index();
+        int to_sq = m.to().index();
+        int promo = 0;
+        if (m.typeOf() == chess::Move::PROMOTION) {
+            promo = from_chess_piece_type(m.promotionType());
+        }
+        // Pack as integer: from | (to << 6) | (promo << 12)
+        result.push_back(from_sq | (to_sq << 6) | (promo << 12));
+    }
+    return result;
+}
+
+void FastBoard::push_int(int move_int) {
+    chess::Move m = find_move_int(move_int);
+    if (m == chess::Move::NO_MOVE) {
+        // Create UCI string for error message
+        int from_sq = move_int & 0x3F;
+        int to_sq = (move_int >> 6) & 0x3F;
+        int promo = (move_int >> 12) & 0x7;
+        std::string uci;
+        uci += static_cast<char>('a' + (from_sq % 8));
+        uci += static_cast<char>('1' + (from_sq / 8));
+        uci += static_cast<char>('a' + (to_sq % 8));
+        uci += static_cast<char>('1' + (to_sq / 8));
+        if (promo > 0) {
+            const char promo_chars[] = {'\0', '\0', 'n', 'b', 'r', 'q'};
+            if (promo >= 2 && promo <= 5) uci += promo_chars[promo];
+        }
+        throw std::runtime_error("Illegal move: " + uci);
+    }
+    board_.makeMove(m);
+    move_stack_.push_back(m);
+}
+
+bool FastBoard::is_capture_int(int move_int) const {
+    int to_sq = (move_int >> 6) & 0x3F;
+    chess::Square to(to_sq);
+
+    // Check if there's a piece on the target square
+    if (board_.at(to) != chess::Piece::NONE) {
+        return true;
+    }
+
+    // Check for en passant
+    auto ep = board_.enpassantSq();
+    if (ep != chess::Square::underlying::NO_SQ && to == ep) {
+        int from_sq = move_int & 0x3F;
+        chess::Square from(from_sq);
+        chess::Piece moving = board_.at(from);
+        if (moving != chess::Piece::NONE && moving.type() == chess::PieceType::PAWN) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool FastBoard::is_en_passant_int(int move_int) const {
+    int from_sq = move_int & 0x3F;
+    int to_sq = (move_int >> 6) & 0x3F;
+
+    chess::Square from(from_sq);
+    chess::Square to(to_sq);
+
+    chess::Piece moving = board_.at(from);
+    if (moving == chess::Piece::NONE || moving.type() != chess::PieceType::PAWN) {
+        return false;
+    }
+
+    auto ep = board_.enpassantSq();
+    return (ep != chess::Square::underlying::NO_SQ && to == ep);
+}
+
+bool FastBoard::is_castling_int(int move_int) const {
+    int from_sq = move_int & 0x3F;
+    int to_sq = (move_int >> 6) & 0x3F;
+
+    chess::Square from(from_sq);
+    chess::Piece moving = board_.at(from);
+
+    if (moving == chess::Piece::NONE || moving.type() != chess::PieceType::KING) {
+        return false;
+    }
+
+    // Check if king moves more than one square horizontally
+    int from_file = from_sq % 8;
+    int to_file = to_sq % 8;
+    return std::abs(to_file - from_file) > 1;
+}
+
+bool FastBoard::gives_check_int(int move_int) const {
+    // Make a copy and test the move
+    chess::Board test_board = board_;
+
+    chess::Move m = find_move_int(move_int);
+    if (m == chess::Move::NO_MOVE) {
+        return false;
+    }
+
+    test_board.makeMove(m);
+    return test_board.inCheck();
+}
+
+bool FastBoard::is_legal_int(int move_int) const {
+    int from_sq = move_int & 0x3F;
+    int to_sq = (move_int >> 6) & 0x3F;
+    int promo = (move_int >> 12) & 0x7;
+
+    chess::Movelist moves;
+    chess::movegen::legalmoves(moves, board_);
+
+    for (const auto& m : moves) {
+        if (m.from().index() == from_sq && m.to().index() == to_sq) {
+            if (promo > 0) {
+                if (m.typeOf() == chess::Move::PROMOTION &&
+                    from_chess_piece_type(m.promotionType()) == promo) {
+                    return true;
+                }
+            } else if (m.typeOf() != chess::Move::PROMOTION) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+int FastBoard::piece_type_at(int square) const {
+    chess::Square sq(square);
+    chess::Piece piece = board_.at(sq);
+    if (piece == chess::Piece::NONE) {
+        return 0;
+    }
+    return from_chess_piece_type(piece.type());
+}
+
+bool FastBoard::piece_color_at(int square) const {
+    chess::Square sq(square);
+    chess::Piece piece = board_.at(sq);
+    return piece.color() == chess::Color::WHITE;
+}
+
+bool FastBoard::is_occupied(int square) const {
+    chess::Square sq(square);
+    return board_.at(sq) != chess::Piece::NONE;
+}
+
+int FastBoard::move_to_int(const PyMove& move) {
+    return move.from_square | (move.to_square << 6) | (move.promotion << 12);
+}
+
+PyMove FastBoard::int_to_move(int move_int) {
+    int from_sq = move_int & 0x3F;
+    int to_sq = (move_int >> 6) & 0x3F;
+    int promo = (move_int >> 12) & 0x7;
+    return PyMove(from_sq, to_sq, promo);
+}
+
+// ============== END INTEGER-BASED METHODS ==============
 
 bool FastBoard::turn() const {
     return board_.sideToMove() == chess::Color::WHITE;
@@ -219,10 +414,10 @@ uint64_t FastBoard::castling_rights() const {
     // Convert to python-chess format (bitfield of rook squares)
     uint64_t rights = 0;
     auto cr = board_.castlingRights();
-    
+
     // Use the nested Side enum from Board::CastlingRights
     using Side = chess::Board::CastlingRights::Side;
-    
+
     if (cr.has(chess::Color::WHITE, Side::KING_SIDE)) {
         rights |= (1ULL << 7);  // H1
     }
@@ -235,7 +430,7 @@ uint64_t FastBoard::castling_rights() const {
     if (cr.has(chess::Color::BLACK, Side::QUEEN_SIDE)) {
         rights |= (1ULL << 56);  // A8
     }
-    
+
     return rights;
 }
 
@@ -250,11 +445,11 @@ int FastBoard::ep_square() const {
 std::optional<PyPiece> FastBoard::piece_at(int square) const {
     chess::Square sq(square);
     chess::Piece piece = board_.at(sq);
-    
+
     if (piece == chess::Piece::NONE) {
         return std::nullopt;
     }
-    
+
     PyPiece result;
     result.piece_type = from_chess_piece_type(piece.type());
     result.color = (piece.color() == chess::Color::WHITE);
@@ -264,13 +459,14 @@ std::optional<PyPiece> FastBoard::piece_at(int square) const {
 int FastBoard::king(bool color) const {
     chess::Color c = color ? chess::Color::WHITE : chess::Color::BLACK;
     chess::Bitboard king_bb = board_.pieces(chess::PieceType::KING, c);
-    
-    if (king_bb.empty()) {
-        return -1;  // No king found
+
+    uint64_t bb = king_bb.getBits();
+    if (bb == 0) {
+        return -1;
     }
-    
-    // lsb() returns the square index directly as int
-    return king_bb.lsb();
+
+    // Find the set bit (king square)
+    return __builtin_ctzll(bb);
 }
 
 uint64_t FastBoard::occupied() const {
@@ -326,12 +522,12 @@ bool FastBoard::is_repetition(int count) const {
 
 bool FastBoard::is_capture(const PyMove& move) const {
     chess::Square to(move.to_square);
-    
+
     // Check if there's a piece on the target square
     if (board_.at(to) != chess::Piece::NONE) {
         return true;
     }
-    
+
     // Check for en passant
     auto ep = board_.enpassantSq();
     if (ep != chess::Square::underlying::NO_SQ && to == ep) {
@@ -341,19 +537,19 @@ bool FastBoard::is_capture(const PyMove& move) const {
             return true;
         }
     }
-    
+
     return false;
 }
 
 bool FastBoard::is_en_passant(const PyMove& move) const {
     chess::Square from(move.from_square);
     chess::Square to(move.to_square);
-    
+
     chess::Piece moving = board_.at(from);
     if (moving == chess::Piece::NONE || moving.type() != chess::PieceType::PAWN) {
         return false;
     }
-    
+
     auto ep = board_.enpassantSq();
     return (ep != chess::Square::underlying::NO_SQ && to == ep);
 }
@@ -361,11 +557,11 @@ bool FastBoard::is_en_passant(const PyMove& move) const {
 bool FastBoard::is_castling(const PyMove& move) const {
     chess::Square from(move.from_square);
     chess::Piece moving = board_.at(from);
-    
+
     if (moving == chess::Piece::NONE || moving.type() != chess::PieceType::KING) {
         return false;
     }
-    
+
     // Check if king moves more than one square horizontally
     int from_file = move.from_square % 8;
     int to_file = move.to_square % 8;
@@ -375,11 +571,11 @@ bool FastBoard::is_castling(const PyMove& move) const {
 bool FastBoard::gives_check(const PyMove& move) const {
     // Make a copy and test the move
     chess::Board test_board = board_;
-    
+
     // Find and make the move
     chess::Movelist moves;
     chess::movegen::legalmoves(moves, test_board);
-    
+
     for (const auto& m : moves) {
         if (m.from().index() == move.from_square &&
             m.to().index() == move.to_square) {
@@ -395,7 +591,7 @@ bool FastBoard::gives_check(const PyMove& move) const {
             }
         }
     }
-    
+
     return false;
 }
 
@@ -418,7 +614,7 @@ uint64_t FastBoard::zobrist_hash() const {
 
 uint64_t FastBoard::polyglot_hash() const {
     uint64_t h = 0;
-    
+
     // Hash all pieces
     for (int sq = 0; sq < 64; sq++) {
         chess::Square square(sq);
@@ -429,11 +625,11 @@ uint64_t FastBoard::polyglot_hash() const {
             h ^= polyglot::piece_key(pt, color, sq);
         }
     }
-    
+
     // Hash castling rights
     auto cr = board_.castlingRights();
     using Side = chess::Board::CastlingRights::Side;
-    
+
     if (cr.has(chess::Color::WHITE, Side::KING_SIDE)) {
         h ^= polyglot::RANDOM_ARRAY[polyglot::CASTLING_BASE + 0];
     }
@@ -446,13 +642,13 @@ uint64_t FastBoard::polyglot_hash() const {
     if (cr.has(chess::Color::BLACK, Side::QUEEN_SIDE)) {
         h ^= polyglot::RANDOM_ARRAY[polyglot::CASTLING_BASE + 3];
     }
-    
+
     // Hash en passant (only if there's a legal ep capture)
     auto ep = board_.enpassantSq();
     if (ep != chess::Square::underlying::NO_SQ) {
         int ep_file = ep.index() % 8;
         int ep_rank = ep.index() / 8;
-        
+
         // Determine which color can capture and where their pawns would be
         int pawn_rank;
         chess::Color capturing_color;
@@ -463,7 +659,7 @@ uint64_t FastBoard::polyglot_hash() const {
             pawn_rank = 3;
             capturing_color = chess::Color::BLACK;
         }
-        
+
         // Check for adjacent pawns of the capturing color
         bool has_legal_ep = false;
         for (int file_offset : {-1, 1}) {
@@ -472,25 +668,25 @@ uint64_t FastBoard::polyglot_hash() const {
                 int pawn_sq = pawn_rank * 8 + pawn_file;
                 chess::Square psq(pawn_sq);
                 chess::Piece p = board_.at(psq);
-                if (p != chess::Piece::NONE && 
-                    p.type() == chess::PieceType::PAWN && 
+                if (p != chess::Piece::NONE &&
+                    p.type() == chess::PieceType::PAWN &&
                     p.color() == capturing_color) {
                     has_legal_ep = true;
                     break;
                 }
             }
         }
-        
+
         if (has_legal_ep) {
             h ^= polyglot::RANDOM_ARRAY[polyglot::EP_BASE + ep_file];
         }
     }
-    
+
     // Hash side to move (Polyglot only hashes when white to move)
     if (board_.sideToMove() == chess::Color::WHITE) {
         h ^= polyglot::RANDOM_ARRAY[polyglot::TURN_KEY];
     }
-    
+
     return h;
 }
 
@@ -498,7 +694,7 @@ std::string FastBoard::san(const PyMove& move) const {
     // Find the internal move representation
     chess::Movelist moves;
     chess::movegen::legalmoves(moves, board_);
-    
+
     for (const auto& m : moves) {
         if (m.from().index() == move.from_square &&
             m.to().index() == move.to_square) {
@@ -512,7 +708,7 @@ std::string FastBoard::san(const PyMove& move) const {
             }
         }
     }
-    
+
     return move.uci();  // Fallback to UCI
 }
 

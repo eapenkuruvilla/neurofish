@@ -4,6 +4,9 @@
  * Thread Safety: This module is safe to use without the GIL.
  * Each FastBoard instance is independent with no shared mutable state.
  * Different threads can safely operate on different board instances.
+ *
+ * OPTIMIZATION: Integer-based methods added to reduce Python object creation
+ * overhead in multi-threaded scenarios.
  */
 
 #include <pybind11/pybind11.h>
@@ -22,7 +25,7 @@ namespace py = pybind11;
     // Older pybind11 - GIL will be used
     PYBIND11_MODULE(chess_cpp, m) {
 #endif
-    m.doc() = "Fast C++ chess library bindings for Python (thread-safe)";
+    m.doc() = "Fast C++ chess library bindings for Python (thread-safe, with integer move optimizations)";
 
     // ============== PyMove ==============
     py::class_<chess_wrapper::PyMove>(m, "Move")
@@ -78,12 +81,56 @@ namespace py = pybind11;
         .def("set_fen", &chess_wrapper::FastBoard::set_fen)
         .def("fen", &chess_wrapper::FastBoard::fen)
 
-        // Move making
+        // Move making - PyMove versions
         .def("push", &chess_wrapper::FastBoard::push)
         .def("push_uci", &chess_wrapper::FastBoard::push_uci)
         .def("pop", &chess_wrapper::FastBoard::pop)
 
-        // Legal moves
+        // ========== INTEGER-BASED METHODS (optimized for multi-threading) ==========
+        // Move format: from_square | (to_square << 6) | (promotion << 12)
+
+        .def("legal_moves_int", &chess_wrapper::FastBoard::legal_moves_int,
+             "Generate legal moves as packed integers (from | to<<6 | promo<<12)")
+
+        .def("push_int", &chess_wrapper::FastBoard::push_int,
+             py::arg("move_int"),
+             "Push a move given as packed integer")
+
+        .def("is_capture_int", &chess_wrapper::FastBoard::is_capture_int,
+             py::arg("move_int"),
+             "Check if integer move is a capture")
+
+        .def("is_en_passant_int", &chess_wrapper::FastBoard::is_en_passant_int,
+             py::arg("move_int"),
+             "Check if integer move is en passant")
+
+        .def("is_castling_int", &chess_wrapper::FastBoard::is_castling_int,
+             py::arg("move_int"),
+             "Check if integer move is castling")
+
+        .def("gives_check_int", &chess_wrapper::FastBoard::gives_check_int,
+             py::arg("move_int"),
+             "Check if integer move gives check")
+
+        .def("is_legal_int", &chess_wrapper::FastBoard::is_legal_int,
+             py::arg("move_int"),
+             "Check if integer move is legal")
+
+        .def("piece_type_at", &chess_wrapper::FastBoard::piece_type_at,
+             py::arg("square"),
+             "Get piece type at square (0 if empty, 1-6 for piece types)")
+
+        .def("piece_color_at", &chess_wrapper::FastBoard::piece_color_at,
+             py::arg("square"),
+             "Get piece color at square (true=white, false=black)")
+
+        .def("is_occupied", &chess_wrapper::FastBoard::is_occupied,
+             py::arg("square"),
+             "Check if square is occupied")
+
+        // ========== END INTEGER-BASED METHODS ==========
+
+        // Legal moves - PyMove versions
         .def("legal_moves", &chess_wrapper::FastBoard::legal_moves)
         .def("legal_moves_count", &chess_wrapper::FastBoard::legal_moves_count)
         .def("is_legal", &chess_wrapper::FastBoard::is_legal)
@@ -113,7 +160,7 @@ namespace py = pybind11;
         .def("is_repetition", &chess_wrapper::FastBoard::is_repetition,
              py::arg("count") = 3)
 
-        // Move classification
+        // Move classification - PyMove versions
         .def("is_capture", &chess_wrapper::FastBoard::is_capture)
         .def("is_en_passant", &chess_wrapper::FastBoard::is_en_passant)
         .def("is_castling", &chess_wrapper::FastBoard::is_castling)
@@ -139,6 +186,14 @@ namespace py = pybind11;
     m.def("square_mirror", &chess_wrapper::FastBoard::square_mirror);
     m.def("make_square", &chess_wrapper::FastBoard::make_square,
           py::arg("file"), py::arg("rank"));
+
+    // Integer move conversion utilities
+    m.def("move_to_int", &chess_wrapper::FastBoard::move_to_int,
+          py::arg("move"),
+          "Convert PyMove to packed integer");
+    m.def("int_to_move", &chess_wrapper::FastBoard::int_to_move,
+          py::arg("move_int"),
+          "Convert packed integer to PyMove");
 
     // ============== Constants ==============
     // Piece types
