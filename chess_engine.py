@@ -6,19 +6,15 @@ import threading
 from collections import namedtuple
 from pathlib import Path
 from typing import List, Tuple, Optional, Callable
-# import chess  # Removed - using cached_board constants
-# import chess.polyglot  # Removed - polyglot handled in book.py
 import numpy as np
-import random
-
+import random # Do not delete
 import config
 from cached_board import (
-    CachedBoard, int_to_tuple, int_to_uci, uci_to_int, move_to_int_from_obj,
+    CachedBoard, int_to_tuple, int_to_uci, move_to_int_from_obj,
     PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING,
     WHITE, BLACK,
     PIECE_VALUES,
 )
-from config import configure_multi_core_blas
 from nn_evaluator import NNUEEvaluator, NNEvaluator
 
 ROOT_DIR = str(Path(__file__).resolve().parent)
@@ -80,8 +76,26 @@ class ShardedDict:
     def __setitem__(self, key, value):
         self._shard(key)[key] = value
 
+    def __delitem__(self, key):
+        del self._shard(key)[key]
+
     def __contains__(self, key):
         return key in self._shard(key)
+
+    def keys(self):
+        for shard in self.shards:
+            yield from shard.keys()
+
+    def items(self):
+        for shard in self.shards:
+            yield from shard.items()
+
+    def values(self):
+        for shard in self.shards:
+            yield from shard.values()
+
+    def __iter__(self):
+        return self.keys()
 
     def pop(self, key, default=None):
         return self._shard(key).pop(key, default)
@@ -93,24 +107,16 @@ class ShardedDict:
     def __len__(self):
         return sum(len(s) for s in self.shards)
 
+    def __getattr__(self, name):
+        raise AttributeError(f"ShardedDict missing attribute: {name}")
+
     # --- optional size control ---
     def trim(self, max_total_size: int):
-        """
-        Trim across shards to ~75% of max_total_size.
-        """
-        current = len(self)
-        if current <= max_total_size:
+        if len(self) <= max_total_size:
             return
 
-        target = max_total_size * 3 // 4
-        per_shard_target = target // self.num_shards
-
-        for shard in self.shards:
-            if len(shard) > per_shard_target:
-                keys = list(shard.keys())
-                remove_count = len(shard) - per_shard_target
-                for k in keys[:remove_count]:
-                    del shard[k]
+        for i in range(self.num_shards):
+            self.shards[i] = {}
 
 
 class ShardedTT(ShardedDict):
@@ -136,11 +142,9 @@ class ShardedTT(ShardedDict):
             shard[key] = entry
 
 
-
-NUM_SHARDS = 8
-transposition_table = ShardedTT(NUM_SHARDS)
-qs_transposition_table = ShardedDict(NUM_SHARDS)
-nn_eval_cache = ShardedDict(NUM_SHARDS)
+transposition_table = ShardedTT(config.NUM_SHARDS_TABLES)
+qs_transposition_table = ShardedDict(config.NUM_SHARDS_TABLES)
+nn_eval_cache = ShardedDict(config.NUM_SHARDS_TABLES)
 
 # Track positions seen in the current game (cleared on ucinewgame)
 game_position_history: dict[int, int] = {}  # zobrist_hash -> count
@@ -1037,16 +1041,17 @@ class ChessEngine:
         singular_extension_applicable = False
         singular_move_int = 0
 
+        tt_entry = transposition_table.get(key)
         if (allow_singular
                 and depth >= 6
                 and tt_move_int != 0
                 and not in_check
-                and key in transposition_table
-                and transposition_table[key].flag != TT_UPPER_BOUND
-                and transposition_table[key].depth >= depth - 3):
+                and tt_entry is not None
+                and tt_entry.flag != TT_UPPER_BOUND
+                and tt_entry.depth >= depth - 3):
 
             reduced_depth = max(1, depth // 2 - 1)
-            reduced_beta = transposition_table[key].score - config.SINGULAR_MARGIN
+            reduced_beta = tt_entry.score - config.SINGULAR_MARGIN
 
             move_count = 0
             highest_score = -config.MAX_SCORE

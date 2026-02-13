@@ -239,13 +239,13 @@ conda activate neurofish
 
 ### Lazy SMP Performance
 
-| Threads         | ELO      |
-|-----------------|----------|
-| 1               | Baseline |
-| 2 (with GIL)    | -84      |
-| 2 (without GIL) | +109     |
-| 3 (without GIL) | +218     |
-| 4 (without GIL) | +109     |
+| Threads          | Python Version         | ELO      |
+|------------------|------------------------|----------|
+| 1                | 3.14                   | Baseline |
+| 2  | 3.14                   | -84      |
+| 2  | 3.14t (Free Threading) | +210     |
+| 3  | 3.14t (Free Threading)                       | +181     |
+| 4   | 3.14t (Free Threading)                       | +163     |
 
 
 **Analysis:** Two threads yield a modest +14 ELO over single-threaded search, but scaling to four threads regresses by −27 ELO below the single-threaded baseline. This is a direct consequence of Python's Global Interpreter Lock (GIL): while NumPy and the NN inference layers release the GIL during heavy computation, the search logic itself—move ordering, alpha-beta recursion, transposition table lookups—runs under the GIL and becomes a contention bottleneck as thread count increases. At two threads the diversity benefit of Lazy SMP (workers exploring slightly different search trees and populating the shared transposition table) narrowly outweighs the GIL overhead, but at four threads the contention cost dominates. The optimal configuration for NeuroFish is therefore two threads; meaningful scaling beyond this would require moving the core search loop to C/C++ or to a GIL-free runtime.

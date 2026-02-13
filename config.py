@@ -1,5 +1,4 @@
 import os
-import sys
 
 # Track which parameters were overridden from environment
 _overridden_params = []
@@ -56,7 +55,7 @@ debug_mode = _env_bool('DEBUG_MODE', False)  # Runtime toggle via UCI "debug on/
 PONDERING_ENABLED = _env_bool('PONDERING_ENABLED', True)
 
 # Multiprocessing configuration
-THREADS = _env_int('THREADS', 3)  # 1 or less disables multiprocessing, UCI option "Threads"
+THREADS = _env_int('THREADS', 2)  # 1 or less disables multiprocessing, UCI option "Threads"
 
 LAZY_SMP_MOVE_ORDER_RANDOMNESS = _env_int('LAZY_SMP_MOVE_ORDER_RANDOMNESS', 5)  # Â±N centipawns noise for move ordering diversity
 LAZY_SMP_DEPTH_OFFSET = _env_int('LAZY_SMP_DEPTH_OFFSET', 1)  # Stagger worker starting depths by this amount
@@ -161,7 +160,9 @@ RAZORING_MAX_DEPTH = _env_int('RAZORING_MAX_DEPTH', 2)
 
 MAX_NEGAMAX_DEPTH = _env_int('MAX_NEGAMAX_DEPTH', 20)
 MAX_SEARCH_TIME = _env_int('MAX_SEARCH_TIME', 30)
+
 MAX_TABLE_SIZE = _env_int('MAX_TABLE_SIZE', 200_000)
+NUM_SHARDS_TABLES = _env_int('NUM_SHARDS_TABLES', 16)
 
 
 # Print overridden parameters at module load time
@@ -191,11 +192,9 @@ def configure_multi_core_blas() -> None:
         os.environ["OPENBLAS_NUM_THREADS"] = "1"
         os.environ["MKL_NUM_THREADS"] = "1"
         os.environ["OMP_NUM_THREADS"] = "1"
-        #print(f"info string Disabling multi-threaded BLAS", flush=True)
     else:
         del os.environ['OPENBLAS_NUM_THREADS']
         del os.environ['MKL_NUM_THREADS']
         del os.environ['OMP_NUM_THREADS']
-        #print(f"info string Allowing multi-threaded BLAS", flush=True)
 
 configure_multi_core_blas()
