@@ -1,9 +1,7 @@
-python==3.14t
 numpy==2.4.2
 torch==2.10.0
-cytho==3.2.4
-chess==1.11.2
+cython==3.2.4
 zstandard==0.25.0
 setuptools==82.0.0
-chees==0.25.0
+chess==1.11.2
 zstandard==0.25.0

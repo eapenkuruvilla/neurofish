@@ -23,8 +23,10 @@ WAC 263, ELO 2447
 sudo apt update; sudo apt install build-essential libssl-dev libffi-dev zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libreadline-dev libgdbm-dev libsqlite3-dev libbz2-dev -y
 pyenv install 3.14t
 pyenv local 3.14t
+Delete the old venv
 python3.14t -m venv .venv
 pip install --upgrade pip
+pip install -r requirements.txt
 
 02/10/26
 2T=+80, WAC-257, nps:12233
