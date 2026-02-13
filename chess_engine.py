@@ -6,8 +6,11 @@ import threading
 from collections import namedtuple
 from pathlib import Path
 from typing import List, Tuple, Optional, Callable
+# import chess  # Removed - using cached_board constants
+# import chess.polyglot  # Removed - polyglot handled in book.py
 import numpy as np
-import random # Do not delete
+import random
+
 import config
 from cached_board import (
     CachedBoard, int_to_tuple, int_to_uci, move_to_int_from_obj,
@@ -21,6 +24,73 @@ ROOT_DIR = str(Path(__file__).resolve().parent)
 MODEL_PATH = ROOT_DIR + '/model/nnue.pt'
 
 
+# =============================================================================
+# DIAGNOSTIC TRACKING CLASS
+# =============================================================================
+class _DepthDiag:
+    """Per-search diagnostic tracking for performance analysis."""
+    __slots__ = ('stats', 'prev_score', 'swings', 'aw_fails', 'nodes_start', 'qs_start', 'prev_nps')
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.stats = {}
+        self.prev_score = None
+        self.swings = []
+        self.aw_fails = []
+        self.nodes_start = 0
+        self.qs_start = 0
+        self.prev_nps = 0
+
+    def record(self, depth, time_s, nodes, score, aw_retries, qs_nodes):
+        nps = int(nodes / time_s) if time_s > 0 else 0
+        qs_pct = (qs_nodes / nodes * 100) if nodes > 0 else 0
+        self.stats[depth] = {'t': time_s, 'n': nodes, 'nps': nps, 's': score, 'aw': aw_retries, 'qs%': qs_pct}
+
+        if self.prev_score is not None and depth > 1:
+            swing = score - self.prev_score
+            if abs(swing) > 30:
+                self.swings.append((depth, self.prev_score, score, swing))
+        self.prev_score = score
+
+        # NPS crash detection
+        if self.prev_nps > 0 and nps < self.prev_nps * 0.4:
+            print(f"info string NPS_CRASH D{depth}: {nps:,} (was {self.prev_nps:,}) QS={qs_pct:.0f}%", flush=True)
+        self.prev_nps = nps
+
+    def aw_fail(self, depth, ftype, window, score, expected):
+        self.aw_fails.append((depth, ftype, window, score, expected))
+        print(f"info string AW_FAIL_{ftype.upper()} D{depth}: score={score} expected~{expected} win={window}",
+              flush=True)
+
+    def summary(self):
+        if not self.stats:
+            return
+        total_t = sum(s['t'] for s in self.stats.values())
+        if total_t < 0.5:
+            return
+
+        print("info string === SEARCH DIAG ===", flush=True)
+        for d in sorted(self.stats):
+            s = self.stats[d]
+            print(f"info string  D{d}: {s['t']:.2f}s {s['nps']:,}nps sc={s['s']:+d} AW={s['aw']} QS={s['qs%']:.0f}%",
+                  flush=True)
+
+        if self.swings:
+            print(f"info string SWINGS: {len(self.swings)}", flush=True)
+            for d, p, c, sw in self.swings:
+                sev = "!!!" if abs(sw) > 100 else ("!!" if abs(sw) > 50 else "!")
+                print(f"info string  {sev} D{d}: {p:+d}->{c:+d} ({sw:+d}cp)", flush=True)
+
+        if self.aw_fails:
+            print(f"info string AW_FAILS: {len(self.aw_fails)} (low={sum(1 for f in self.aw_fails if f[1] == 'low')})",
+                  flush=True)
+
+
+_ddiag = _DepthDiag()
+
+
 def is_debug_enabled() -> bool:
     """Check if diagnostic output is enabled (either via IS_DIAGNOSTIC or UCI debug on)."""
     return config.DIAGNOSTIC or config.debug_mode
@@ -32,7 +102,7 @@ def set_debug_mode(enabled: bool):
 
 
 # ======================================================================
-# Shared state (module globals) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â intentionally shared across threads
+# Shared state (module globals) ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â intentionally shared across threads
 # ======================================================================
 
 class TimeControl:
@@ -154,11 +224,11 @@ HISTORY_TABLE_SIZE = 25000
 
 
 # ======================================================================
-# Search generation ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â plain int, only main thread writes, workers read
+# Search generation ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â plain int, only main thread writes, workers read
 # ======================================================================
 
 class _SearchControl:
-    """Lightweight stop signaling for Lazy SMP. No locks needed ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
+    """Lightweight stop signaling for Lazy SMP. No locks needed ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â
     only the main thread writes, workers only read."""
     generation = 1
 
@@ -449,8 +519,9 @@ def _make_qs_stats():
         "time_cutoffs": 0,
     }
 
+
 # ======================================================================
-# ChessEngine class ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â per-instance state, no thread-local hacks
+# ChessEngine class per-instance state, no thread-local hacks
 # ======================================================================
 
 class ChessEngine:
@@ -462,7 +533,7 @@ class ChessEngine:
     soft_stop flag, and NN evaluator reference.
 
     Shared state (TT, nn_eval_cache, game_position_history, TimeControl)
-    remains at module level ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â this is intentional for Lazy SMP communication.
+    remains at module level ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â this is intentional for Lazy SMP communication.
     """
 
     def __init__(self, nn_eval: Optional[NNEvaluator] = None,
@@ -479,6 +550,7 @@ class ChessEngine:
             worker_id: Worker ID for Lazy SMP (0 = main/canonical worker).
         """
         # Per-instance heuristics
+        self._current_id_depth = None
         self.killer_moves_int = [[0, 0] for _ in range(config.MAX_NEGAMAX_DEPTH + 1)]
         self.history_heuristic = np.zeros(HISTORY_TABLE_SIZE, dtype=np.int32)
 
@@ -490,7 +562,7 @@ class ChessEngine:
         # Per-instance stop flag
         self.soft_stop = False
 
-        # NN evaluator (per-instance ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â each thread needs its own incremental state)
+        # NN evaluator (per-instance ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â each thread needs its own incremental state)
         self.nn_evaluator = nn_eval if nn_eval is not None else nn_evaluator
 
         # Lazy SMP stop signaling
@@ -505,7 +577,7 @@ class ChessEngine:
         self._rng = random.Random()
         # Per-instance random for evaluation noise (Lazy SMP diversity)
         self._eval_rng = random.Random()
-        self._eval_noise = 5  # ±5 centipawns noise range
+        self._eval_noise = 5  # Ã‚Â±5 centipawns noise range
         self._noise_table = None  # Pre-computed noise lookup table
         self._move_order_salt = 0  # Worker-specific salt for deterministic move ordering
 
@@ -521,7 +593,7 @@ class ChessEngine:
         self.soft_stop = False
         self.completed_depth = 0
         self._qs_stats = _make_qs_stats()
-        # Don't reset kpi or _diag ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â they accumulate across searches for reporting
+        # Don't reset kpi or _diag ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â they accumulate across searches for reporting
 
     def reset_kpi(self):
         """Reset KPI counters."""
@@ -544,7 +616,7 @@ class ChessEngine:
         """Set evaluation noise for search diversity.
 
         Args:
-            noise_range: Max noise in centipawns (e.g., 5 means ±5cp)
+            noise_range: Max noise in centipawns (e.g., 5 means Ã‚Â±5cp)
             seed: Random seed. Different workers should use different seeds.
         """
         self._eval_noise = noise_range
@@ -755,12 +827,17 @@ class ChessEngine:
     # ------------------------------------------------------------------
 
     def quiescence(self, board: CachedBoard, alpha: int, beta: int, q_depth: int,
-                   last_capture_sq: int = -1) -> Tuple[int, List[int]]:
+                   negamax_depth: int, last_capture_sq: int = -1) -> Tuple[int, List[int]]:
         """Quiescence search with improved time management and move limits."""
         self.kpi['q_depth'] = max(self.kpi['q_depth'], q_depth)
         self.kpi['nodes'] += 1
         self._qs_stats["total_nodes"] += 1
         self._qs_stats["max_depth_reached"] = max(self._qs_stats["max_depth_reached"], q_depth)
+
+        # Calculate adaptive QS depth limit based on negamax depth
+        negamax_ply = self._current_id_depth - negamax_depth
+        adaptive_qs_max_depth = config.QS_DEPTH_BASE + (negamax_ply * config.QS_DEPTH_PER_PLY)
+        #adaptive_qs_max_depth = config.QS_DEPTH_BASE + (negamax_depth * config.QS_DEPTH_PER_PLY)
 
         # Check time periodically (inlined to avoid double perf_counter calls)
         if self._qs_stats["total_nodes"] % config.QS_TIME_CHECK_INTERVAL == 0:
@@ -782,26 +859,29 @@ class ChessEngine:
 
         # Hard stop always honored immediately
         if TimeControl.stop_search or self._generation_stop():
-            if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL:
+            if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL and \
+                negamax_ply >= config.NEGAMAX_PLY_MIN_NN_EVAL:
                 return self.evaluate_nn(board, skip_game_over=True), []
             else:
                 return self.evaluate_classical(board, skip_game_over=True), []
 
         # Earlier soft stop in QS
         in_capture_sequence = (last_capture_sq >= 0)
-        if self.soft_stop and q_depth > round(config.MAX_QS_DEPTH // config.QS_SOFT_STOP_DIVISOR):
+        if self.soft_stop and q_depth > round(adaptive_qs_max_depth // config.QS_SOFT_STOP_DIVISOR):
             if not in_capture_sequence:
                 self._qs_stats["time_cutoffs"] += 1
                 self._diag_warn("qs_time_cutoff", f"QS soft-stopped at depth {q_depth}")
-                if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL:
+                if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL and\
+                        negamax_ply >= config.NEGAMAX_PLY_MIN_NN_EVAL:
                     return self.evaluate_nn(board, skip_game_over=True), []
                 else:
                     return self.evaluate_classical(board, skip_game_over=True), []
 
         # Hard depth limit
-        if q_depth > config.MAX_QS_DEPTH:
-            self._diag_warn("qs_depth_exceeded", f"QS hit depth {q_depth}, fen={board.fen()[:40]}")
-            if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL:
+        if q_depth > adaptive_qs_max_depth:
+            self._diag_warn("qs_depth_exceeded", f"QS hit adaptive depth {adaptive_qs_max_depth} (negamax D{negamax_depth}), fen={board.fen()[:40]}")
+            if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL and \
+                    negamax_ply >= config.NEGAMAX_PLY_MIN_NN_EVAL:
                 return self.evaluate_nn(board, skip_game_over=True), []
             else:
                 return self.evaluate_classical(board, skip_game_over=True), []
@@ -825,7 +905,8 @@ class ChessEngine:
         # Stand-pat (not valid when in check)
         if not is_check:
             is_nn_eval = False
-            if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MIN_NN_EVAL:
+            if config.NN_ENABLED and q_depth <= config.QS_DEPTH_MIN_NN_EVAL and \
+                    negamax_ply >= config.NEGAMAX_PLY_MIN_NN_EVAL:
                 stand_pat = self.evaluate_nn(board)
                 is_nn_eval = True
             else:
@@ -833,7 +914,8 @@ class ChessEngine:
 
             if (not is_nn_eval and config.NN_ENABLED and q_depth <= config.QS_DEPTH_MAX_NN_EVAL
                     and abs(stand_pat) < config.STAND_PAT_MAX_NN_EVAL
-                    and abs(stand_pat - beta) < config.QS_DELTA_MAX_NN_EVAL):
+                    and abs(stand_pat - beta) < config.QS_DELTA_MAX_NN_EVAL
+                    and negamax_ply >= config.NEGAMAX_PLY_MIN_NN_EVAL):
                 stand_pat = self.evaluate_nn(board)
                 is_nn_eval = True
 
@@ -847,7 +929,8 @@ class ChessEngine:
             if (not is_nn_eval and config.NN_ENABLED
                     and q_depth <= config.QS_DEPTH_MAX_NN_EVAL
                     and abs(stand_pat) < config.STAND_PAT_MAX_NN_EVAL
-                    and (stand_pat > alpha or abs(stand_pat - alpha) < config.QS_DELTA_MAX_NN_EVAL)):
+                    and (stand_pat > alpha or abs(stand_pat - alpha) < config.QS_DELTA_MAX_NN_EVAL)
+                    and negamax_ply >= config.NEGAMAX_PLY_MIN_NN_EVAL):
                 stand_pat = self.evaluate_nn(board)
 
             best_score = stand_pat
@@ -857,7 +940,7 @@ class ChessEngine:
         # Dynamic move limit
         move_limit = None
         for i in range(len(config.MAX_QS_MOVES_DIVISOR)):
-            if q_depth <= round(config.MAX_QS_DEPTH / config.MAX_QS_MOVES_DIVISOR[i]):
+            if q_depth <= round(adaptive_qs_max_depth / config.MAX_QS_MOVES_DIVISOR[i]):
                 move_limit = config.MAX_QS_MOVES[i]
                 break
         if move_limit is None:
@@ -902,14 +985,16 @@ class ChessEngine:
             if is_check:
                 is_capture_move = board.is_capture_int(move_int)
 
-            should_update_nn = q_depth <= config.QS_DEPTH_MAX_NN_EVAL
+            should_update_nn = (q_depth <= config.QS_DEPTH_MAX_NN_EVAL) # and
+                               # q_depth <= adaptive_qs_max_depth // 2)
             if should_update_nn:
                 push_move_int(board, move_int, self.nn_evaluator)
             else:
                 board.push(move_int)
 
             child_capture_sq = to_sq if is_capture_move else -1
-            score, child_pv = self.quiescence(board, -beta, -alpha, q_depth + 1, child_capture_sq)
+            score, child_pv = self.quiescence(board, -beta, -alpha, q_depth + 1,
+                                                         negamax_depth, child_capture_sq)
             score = -score
             board.pop()
 
@@ -925,7 +1010,7 @@ class ChessEngine:
                 self.check_time()
                 if TimeControl.stop_search or self._generation_stop():
                     break
-                if self.soft_stop and q_depth > round(config.MAX_QS_DEPTH // config.QS_SOFT_STOP_DIVISOR):
+                if self.soft_stop and q_depth > round(adaptive_qs_max_depth // config.QS_SOFT_STOP_DIVISOR):
                     if not in_capture_sequence:
                         self._qs_stats["time_cutoffs"] += 1
                         break
@@ -1003,7 +1088,7 @@ class ChessEngine:
 
         # Quiescence if depth == 0
         if depth == 0:
-            return self.quiescence(board, alpha, beta, 1)
+            return self.quiescence(board, alpha, beta, 1, depth)
 
         in_check = board.is_check()
 
@@ -1016,7 +1101,7 @@ class ChessEngine:
             margin = config.RAZORING_MARGIN[depth] if depth < len(config.RAZORING_MARGIN) else \
                 config.RAZORING_MARGIN[-1]
             if static_eval + margin <= alpha:
-                qs_score, qs_pv = self.quiescence(board, alpha, beta, 1)
+                qs_score, qs_pv = self.quiescence(board, alpha, beta, 1, depth)
                 if qs_score <= alpha:
                     self.kpi['razoring_prunes'] += 1
                     return qs_score, qs_pv
@@ -1220,8 +1305,8 @@ class ChessEngine:
         else:
             flag = TT_EXACT
 
-        #old = transposition_table.get(key)
-        #if old is None or depth >= old.depth:
+        # old = transposition_table.get(key)
+        # if old is None or depth >= old.depth:
         #    transposition_table[key] = TTEntry(depth, max_eval, flag, best_move_int)
         transposition_table.store_if_deeper(
             key,
@@ -1231,7 +1316,7 @@ class ChessEngine:
         return max_eval, best_pv
 
     # ------------------------------------------------------------------
-    # find_best_move ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the main iterative deepening entry point
+    # find_best_move ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â the main iterative deepening entry point
     # ------------------------------------------------------------------
 
     def find_best_move(self, fen: str, max_depth: int = config.MAX_NEGAMAX_DEPTH,
@@ -1258,7 +1343,7 @@ class ChessEngine:
 
         Returns:
             Tuple of (best_move_int, score, pv_int, nodes, nps)
-            Returns ints ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â returns integers for UCI conversion.
+            Returns ints ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â returns integers for UCI conversion.
         """
         # Initialize time control
         if not use_existing_time_control:
@@ -1294,7 +1379,7 @@ class ChessEngine:
         # Trim nn_eval_cache (safe only when called from main thread / single engine)
         # For Lazy SMP, parallel_find_best_move trims before spawning workers.
         if self._search_generation is None:  # Main thread only
-            #control_dict_size(nn_eval_cache, config.MAX_TABLE_SIZE)
+            # control_dict_size(nn_eval_cache, config.MAX_TABLE_SIZE)
             nn_eval_cache.trim(config.MAX_TABLE_SIZE)
 
         # Initialize board and evaluator
@@ -1352,7 +1437,13 @@ class ChessEngine:
         is_tactical_position = False
         score_unstable = False
 
+        # === DIAGNOSTIC: Reset tracking ===
+        _ddiag.reset()
+        _ddiag.nodes_start = self.kpi['nodes']
+        _ddiag.qs_start = self._qs_stats.get('total_nodes', 0)
+
         for depth in range(start_depth, max_depth + 1):
+            self._current_id_depth = depth  # Store for quiescence to access
             depth_start_time = time.perf_counter()
             self.check_time()
 
@@ -1515,6 +1606,12 @@ class ChessEngine:
                     break
 
                 # Fail-low or fail-high: widen window
+                # === DIAGNOSTIC: Track AW failures ===
+                if not use_full_window:
+                    if current_best_score <= alpha_orig:
+                        _ddiag.aw_fail(depth, 'low', window, current_best_score, best_score)
+                    elif current_best_score >= beta:
+                        _ddiag.aw_fail(depth, 'high', window, current_best_score, best_score)
                 window *= 2
                 retries += 1
 
@@ -1587,6 +1684,13 @@ class ChessEngine:
                 last_depth_time = time.perf_counter() - depth_start_time
                 max_completed_depth = depth
                 self.completed_depth = max_completed_depth
+
+                # === DIAGNOSTIC: Track per-depth stats ===
+                _diag_depth_nodes = self.kpi['nodes'] - _ddiag.nodes_start
+                _diag_depth_qs = self._qs_stats.get('total_nodes', 0) - _ddiag.qs_start
+                _ddiag.record(depth, last_depth_time, _diag_depth_nodes, best_score, retries, _diag_depth_qs)
+                _ddiag.nodes_start = self.kpi['nodes']
+                _ddiag.qs_start = self._qs_stats.get('total_nodes', 0)
 
                 # Score instability check
                 if prev_depth_score is not None and depth > 2:
@@ -1772,6 +1876,10 @@ class ChessEngine:
         elapsed = time.perf_counter() - TimeControl.start_time if TimeControl.start_time else 0
         nodes_searched = self.kpi['nodes'] - nodes_start
         nps = int(nodes_searched / elapsed) if elapsed > 0 else 0
+
+        # === DIAGNOSTIC: Print search summary ===
+        if config.DIAGNOSTIC:
+            _ddiag.summary()
 
         return best_move_int, best_score, best_pv, nodes_searched, nps
 

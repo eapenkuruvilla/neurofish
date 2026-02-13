@@ -123,6 +123,11 @@ Efficiency: 39.4%
 python 3.14t: WAC: 267, WAC-mp: 259
 Sharded TT: WAC-265, WAC-mp-262
 
+02/13/26
+Adaptive QS depth: WAC-265, WAC-mp-262
+No NN at shallow depths: WAC-261, WAC-mp-263, ELO-2430
+
+
 
 
 

@@ -57,7 +57,7 @@ PONDERING_ENABLED = _env_bool('PONDERING_ENABLED', True)
 # Multiprocessing configuration
 THREADS = _env_int('THREADS', 2)  # 1 or less disables multiprocessing, UCI option "Threads"
 
-LAZY_SMP_MOVE_ORDER_RANDOMNESS = _env_int('LAZY_SMP_MOVE_ORDER_RANDOMNESS', 5)  # Â±N centipawns noise for move ordering diversity
+LAZY_SMP_MOVE_ORDER_RANDOMNESS = _env_int('LAZY_SMP_MOVE_ORDER_RANDOMNESS', 2)  # ±N centipawns noise (reduced from 5)
 LAZY_SMP_DEPTH_OFFSET = _env_int('LAZY_SMP_DEPTH_OFFSET', 1)  # Stagger worker starting depths by this amount
 
 MULTI_CORE_BLAS = _env_bool('MULTI_CORE_BLAS', False)
@@ -70,14 +70,28 @@ L1_QUANTIZATION = _env_str('L1_QUANTIZATION', "INT8")  # Options: "NONE" (FP32),
 # Note when NN related parameters are optimized, use real games as positional understanding will be reflected.
 # The non-NN parameters are primarily about tactics, and they can be quickly tuned using test positions.
 QS_DEPTH_MIN_NN_EVAL = _env_int('QS_DEPTH_MIN_NN_EVAL', 5)  #
-QS_DEPTH_MAX_NN_EVAL = _env_int('QS_DEPTH_MAX_NN_EVAL', 999)  # NN evaluation is allowed at all QS depths
+NEGAMAX_PLY_MIN_NN_EVAL = _env_int('NEGAMAX_PLY_MIN_NN_EVAL', 4)  #
+QS_DEPTH_MAX_NN_EVAL = _env_int('QS_DEPTH_MAX_NN_EVAL', 8)  # NN evaluation depth limit (reduced from 999, now sensible with adaptive QS)
 QS_DELTA_MAX_NN_EVAL = _env_int('QS_DELTA_MAX_NN_EVAL', 100)  # Score difference, below it will trigger a NN evaluation
 STAND_PAT_MAX_NN_EVAL = _env_int('STAND_PAT_MAX_NN_EVAL',
                                  200)  # Absolute value of stand-pat, below it will trigger a NN evaluation.
 
+# ===== ADAPTIVE QUIESCENCE DEPTH =====
+# QS depth now scales with negamax depth to prevent shallow-depth explosion
+# Formula: max_qs_depth = QS_DEPTH_BASE + (negamax_depth * QS_DEPTH_PER_PLY)
+# Examples:
+#   D1: QS_DEPTH = 4 + (1 × 2) = 6
+#   D2: QS_DEPTH = 4 + (2 × 2) = 8
+#   D3: QS_DEPTH = 4 + (3 × 2) = 10
+#   D4: QS_DEPTH = 4 + (4 × 2) = 12
+#   D5: QS_DEPTH = 4 + (5 × 2) = 14
+QS_DEPTH_BASE = _env_int('QS_DEPTH_BASE', 8)  # Minimum QS depth (increased from 4 to fix leaf node issue)
+QS_DEPTH_PER_PLY = _env_int('QS_DEPTH_PER_PLY', 2)  # Add this many QS plies per negamax depth
+
 # Limit moves examined per QS ply to prevent explosion
-MAX_QS_DEPTH = _env_int('MAX_QS_DEPTH', 18)  # Tighter cap to allow deeper soft-stop threshold
-_max_qs_moves_default = [12, 6, 4, 2]
+# MAX_QS_DEPTH is now deprecated in favor of adaptive calculation, but kept for compatibility
+MAX_QS_DEPTH = _env_int('MAX_QS_DEPTH', 18)  # Fallback if adaptive calculation disabled
+_max_qs_moves_default = [5, 4, 3, 2]  # Reduced from [12, 6, 4, 2]
 _max_q_moves_env = os.environ.get('MAX_QS_MOVES')
 if _max_q_moves_env:
     MAX_QS_MOVES = eval(_max_q_moves_env)
@@ -85,7 +99,7 @@ if _max_q_moves_env:
 else:
     MAX_QS_MOVES = _max_qs_moves_default
 
-# MAX_QS_MOVES_DIVISOR divisors divide MAX_QS_DEPTH into 4 segments. For each segment the values in MAX_QS_MOVES apply.
+# MAX_QS_MOVES_DIVISOR divisors divide adaptive QS max depth into segments
 _max_qs_moves_divisor_default = [4, 2.0, 1.33]
 _max_q_moves_divisor_env = os.environ.get('MAX_QS_MOVES_DIVISOR')
 if _max_q_moves_divisor_env:
@@ -94,14 +108,14 @@ if _max_q_moves_divisor_env:
 else:
     MAX_QS_MOVES_DIVISOR = _max_qs_moves_divisor_default
 
-QS_SOFT_STOP_DIVISOR = _env_float('QS_SOFT_STOP_DIVISOR', 4.5)  # Soft-stop at depth 4+ (18/4.5=4)
+QS_SOFT_STOP_DIVISOR = _env_float('QS_SOFT_STOP_DIVISOR', 2.5)  # Soft-stop earlier (increased from 4.5)
 QS_TIME_CRITICAL_FACTOR = _env_float('QS_TIME_CRITICAL_FACTOR', 0.86)
 MAX_QS_MOVES_TIME_CRITICAL = _env_int('MAX_QS_MOVES_TIME_CRITICAL', 5)
 DELTA_PRUNING_QS_MIN_DEPTH = _env_int('DELTA_PRUNING_QS_MIN_DEPTH', 5)
 DELTA_PRUNING_QS_MARGIN = _env_int('DELTA_PRUNING_QS_MARGIN', 75)
 CHECK_QS_MAX_DEPTH = _env_int('CHECK_QS_MAX_DEPTH', 5)
-QS_TIME_CHECK_INTERVAL = _env_int('QS_TIME_CHECK_INTERVAL', 80)  # Reduced overhead
-QS_TIME_BUDGET_FRACTION = _env_float('QS_TIME_BUDGET_FRACTION', 0.45)  # Allow 45% of time for QS
+QS_TIME_CHECK_INTERVAL = _env_int('QS_TIME_CHECK_INTERVAL', 30)  # More frequent checks (reduced from 80)
+QS_TIME_BUDGET_FRACTION = _env_float('QS_TIME_BUDGET_FRACTION', 0.35)  # Tighter budget (reduced from 0.45)
 QS_TT_SUPPORTED = _env_bool('QS_TT_SUPPORTED', False)
 
 # Minimum depth requirements
@@ -117,7 +131,7 @@ EMERGENCY_TIME_RESERVE = _env_float('EMERGENCY_TIME_RESERVE', 0.50)  # Always ke
 ESTIMATED_BRANCHING_FACTOR = _env_float('ESTIMATED_BRANCHING_FACTOR', 4.0)
 TIME_SAFETY_MARGIN_RATIO = _env_float('TIME_SAFETY_MARGIN_RATIO', 0.45)  # Only start new depth if 70%+ time available
 
-ASPIRATION_WINDOW = _env_int('ASPIRATION_WINDOW', 75)  # FIX V4: Increased from 50
+ASPIRATION_WINDOW = _env_int('ASPIRATION_WINDOW', 100)  # Increased from 75 for stability
 MAX_AW_RETRIES = _env_int('MAX_AW_RETRIES', 1)  # Base retries (tactical positions get +1)
 MAX_AW_RETRIES_TACTICAL = _env_int('MAX_AW_RETRIES_TACTICAL', 3)  # More retries for tactical positions
 
@@ -148,53 +162,36 @@ FUTILITY_MAX_DEPTH = _env_int('FUTILITY_MAX_DEPTH', 3)  # Only apply at depth <=
 
 # Razoring - drop into quiescence when far below alpha
 RAZORING_ENABLED = _env_bool('RAZORING_ENABLED', False)
-# Note: RAZORING_MARGIN is a list - use JSON format in env var, e.g. "[0,125,250]"
-_razoring_default = [0, 125, 250]
+RAZORING_MAX_DEPTH = _env_int('RAZORING_MAX_DEPTH', 2)
+_razoring_default = [0, 300, 500]
 _razoring_env = os.environ.get('RAZORING_MARGIN')
 if _razoring_env:
     RAZORING_MARGIN = eval(_razoring_env)
     _overridden_params.append(('RAZORING_MARGIN', _razoring_default, RAZORING_MARGIN))
 else:
     RAZORING_MARGIN = _razoring_default
-RAZORING_MAX_DEPTH = _env_int('RAZORING_MAX_DEPTH', 2)
 
 MAX_NEGAMAX_DEPTH = _env_int('MAX_NEGAMAX_DEPTH', 20)
 MAX_SEARCH_TIME = _env_int('MAX_SEARCH_TIME', 30)
 
-MAX_TABLE_SIZE = _env_int('MAX_TABLE_SIZE', 200_000)
+# Transposition table
+MAX_TABLE_SIZE = _env_int('MAX_TABLE_SIZE', 750_000)  # Increased from 200_000
 NUM_SHARDS_TABLES = _env_int('NUM_SHARDS_TABLES', 16)
 
+# Book
+OPENING_BOOK_ENABLED = _env_bool('OPENING_BOOK_ENABLED', True)
 
-# Print overridden parameters at module load time
-def print_overridden_config():
-    """Print all configuration parameters that were overridden via environment variables."""
+# Resign
+RESIGN_THRESHOLD = _env_int('RESIGN_THRESHOLD', -500)
+RESIGN_MOVES = _env_int('RESIGN_MOVES', 3)
+
+
+def print_overridden_params():
+    """Print parameters overridden from environment."""
     if _overridden_params:
         print("=" * 60)
         print("CONFIGURATION OVERRIDES FROM ENVIRONMENT:")
         print("=" * 60)
-        for key, default, new_value in _overridden_params:
-            print(f"  {key}: {default} -> {new_value}")
+        for key, default, value in _overridden_params:
+            print(f"  {key}: {default} -> {value}")
         print("=" * 60)
-
-
-def get_overridden_params():
-    """Return list of (key, default, new_value) tuples for overridden params."""
-    return _overridden_params.copy()
-
-
-# Auto-print on import (can be disabled by setting QUIET_CONFIG=true)
-if not _env_bool('QUIET_CONFIG', False) and _overridden_params:
-    print_overridden_config()
-
-
-def configure_multi_core_blas() -> None:
-    if not MULTI_CORE_BLAS:
-        os.environ["OPENBLAS_NUM_THREADS"] = "1"
-        os.environ["MKL_NUM_THREADS"] = "1"
-        os.environ["OMP_NUM_THREADS"] = "1"
-    else:
-        del os.environ['OPENBLAS_NUM_THREADS']
-        del os.environ['MKL_NUM_THREADS']
-        del os.environ['OMP_NUM_THREADS']
-
-configure_multi_core_blas()

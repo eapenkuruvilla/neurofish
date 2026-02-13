@@ -5,7 +5,7 @@ from contextlib import redirect_stdout
 
 import config
 import lazy_smp
-from config import print_overridden_config
+from config import print_overridden_params
 from cached_board import CachedBoard
 from chess_engine import find_best_move, TimeControl, nn_eval_cache, clear_game_history
 
@@ -498,7 +498,7 @@ def main():
 
     try:
         run_engine_tests(test_suites['wac'], is_mp)
-        print_overridden_config()
+        print_overridden_params()
     except KeyboardInterrupt:
         print("Interrupted, stopping engine")
         TimeControl.stop_search = True
