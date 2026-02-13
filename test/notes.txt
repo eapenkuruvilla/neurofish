@@ -21,10 +21,10 @@ WAC 263, ELO 2447
 
 02/09/26
 sudo apt update; sudo apt install build-essential libssl-dev libffi-dev zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libreadline-dev libgdbm-dev libsqlite3-dev libbz2-dev -y
-pyenv install 3.13t
-pyenv local 3.13t
-python3.13t -m venv .venv
-source .venv/bin/activate
+pyenv install 3.14t
+pyenv local 3.14t
+python3.14t -m venv .venv
+pip install --upgrade pip
 
 02/10/26
 2T=+80, WAC-257, nps:12233
@@ -41,3 +41,87 @@ ELO T2: 2435, T2:
 WAC: 263, WAC-mp: 259
 ELO T3: 2412
 Progress 32/90: nf_3: +9-3=10 (64%) | nf_2: +4-7=11 (43%) | nf_1: +5-8=7 (42%)
+WAC-mp: 261
+
+python 13.3t
+------------
+(.venv) (base) eapen@OptiPlex-Ubuntu:~/Documents/Projects/neurofish$ THREADS=1 python lazy_smp.py
+4r1k1/1bq2r1p/p2p1np1/3Pppb1/P1P5/1N3P2/1R2B1PP/1Q1R2BK w - - 0 1
+info depth 5 score cp 59 nodes 42345 nps 12167 pv a4a5 g8f8 g1b6 c7b8 h1g1
+nodes: 42345
+nps: 12166
+PV: a4a5 g8f8 g1b6 c7b8 h1g1
+
+(.venv) (base) eapen@OptiPlex-Ubuntu:~/Documents/Projects/neurofish$ THREADS=3 python lazy_smp.py
+info depth 5 score cp 57 nodes 81109 nps 29142 pv a4a5 g8f8 g1b6 c7b8 h1g1
+nodes: 81109
+nps: 29142
+PV: a4a5 g8f8 g1b6 c7b8 h1g1
+
+(.venv) (base) eapen@OptiPlex-Ubuntu:~/Documents/Projects/neurofish$ python test2.py
+1 thread: 0.555s
+2 threads: 1.183s (ideal: 0.555s)
+Parallel efficiency: 46.9%
+
+(.venv) (base) eapen@OptiPlex-Ubuntu:~/Documents/Projects/neurofish$ python test3.py
+Testing with 20 iterations of fibonacci(35)...
+Running in free-threaded build (GIL disabled). True parallelism possible.
+Single-threaded time: 44.5648 seconds
+Two-threaded time:    21.9173 seconds
+Two threads were faster by 22.6475 seconds.
+
+(.venv) (base) eapen@OptiPlex-Ubuntu:~/Documents/Projects/neurofish$ python test6.py
+=== Separate dicts (no contention) ===
+1 thread: 0.122s
+2 threads: 0.106s
+Efficiency: 114.6%
+=== Shared dict (TT-like contention) ===
+1 thread: 0.097s
+2 threads: 0.233s
+
+python 14.3t
+------------
+(.venv) (base) eapen@OptiPlex-Ubuntu:~/Documents/Projects/neurofish$ THREADS=1 python lazy_smp.py
+info depth 5 score cp 59 nodes 42364 nps 15971 pv a4a5 g8f8 g1b6 c7b8 h1g1
+nodes: 42364
+nps: 15970
+Best move: a4a5
+PV: a4a5 g8f8 g1b6 c7b8 h1g1
+(.venv) (base) eapen@OptiPlex-Ubuntu:~/Documents/Projects/neurofish$ THREADS=3 python lazy_smp.py
+info depth 5 score cp 57 nodes 49079 nps 20802 pv a4a5 g8f8 g1b6 c7b8 h1g1
+nodes: 49079
+nps: 20802
+Best move: a4a5
+Score: 57
+PV: a4a5 g8f8 g1b6 c7b8 h1g1
+
+(.venv) (base) eapen@OptiPlex-Ubuntu:~/Documents/Projects/neurofish$ python test2.py
+1 thread: 0.601s
+2 threads: 1.500s (ideal: 0.601s)
+Parallel efficiency: 40.1%
+
+(.venv) (base) eapen@OptiPlex-Ubuntu:~/Documents/Projects/neurofish$ python test3.py
+Testing with 20 iterations of fibonacci(35)...
+Running in free-threaded build (GIL disabled). True parallelism possible.
+Single-threaded time: 29.0114 seconds
+Two-threaded time:    12.3457 seconds
+Two threads were faster by 16.6657 seconds.
+
+(.venv) (base) eapen@OptiPlex-Ubuntu:~/Documents/Projects/neurofish$ python test6.py
+=== Separate dicts (no contention) ===
+1 thread: 0.080s
+2 threads: 0.098s
+Efficiency: 81.5%
+=== Shared dict (TT-like contention) ===
+1 thread: 0.080s
+2 threads: 0.202s
+Efficiency: 39.4%
+
+02/12/26
+python 3.14t
+WAC: 267, WAC-mp: 259
+
+
+
+
+

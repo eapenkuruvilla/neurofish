@@ -10,6 +10,7 @@ Lazy SMP approach:
 
 Optimizations in this version:
 - Pre-populated NN evaluator pool (avoid model loading per search)
+- ChessEngine pool (keeps persistent board warm across searches)
 - PV validation only at end (not on every depth improvement)
 - Callbacks only for depth improvements (skip redundant reports)
 """
@@ -35,6 +36,10 @@ _worker_threads: List[threading.Thread] = []
 _result_queue: Optional[Queue] = None
 _pool_initialized = False
 _num_workers = 0
+
+# Engine pool for reusing ChessEngine instances (keeps persistent board warm)
+_engine_pool: List = []
+_engine_pool_lock = threading.Lock()
 
 # Configuration constants
 MIN_RESULT_WAIT = 0.15  # Minimum seconds to wait for at least one result
@@ -97,14 +102,46 @@ def shutdown_worker_pool():
     _pool_initialized = False
 
 
+def get_engine_from_pool(nn_eval, worker_id: int, generation: int):
+    """Get a ChessEngine from the pool or create a new one."""
+    from chess_engine import ChessEngine, _SearchControl
+
+    with _engine_pool_lock:
+        if _engine_pool:
+            engine = _engine_pool.pop()
+            # Reconfigure for this search
+            engine.nn_evaluator = nn_eval
+            engine._worker_id = worker_id
+            engine._generation = generation
+            engine._search_generation = _SearchControl
+            engine.reset_for_search()
+            return engine
+
+    # Create new engine if pool is empty
+    return ChessEngine(
+        nn_eval=nn_eval,
+        search_generation=_SearchControl,
+        generation=generation,
+        worker_id=worker_id
+    )
+
+
+def return_engine_to_pool(engine):
+    """Return a ChessEngine to the pool for reuse."""
+    with _engine_pool_lock:
+        # Limit pool size to avoid memory bloat
+        if len(_engine_pool) < 10:
+            _engine_pool.append(engine)
+
+
 def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
                      result_queue: Queue, expected_best_moves, start_delay: float = 0.0):
     """
     Lazy SMP worker thread.
 
-    Each worker creates its own ChessEngine instance with isolated state,
-    then calls engine.find_best_move() with a callback for intermediate
-    result reporting.
+    Each worker gets a ChessEngine instance from the pool (or creates new),
+    keeping the persistent board warm across searches. Then calls
+    engine.find_best_move() with a callback for intermediate result reporting.
 
     Workers use staggered starting depths to reduce duplicate work:
     - Worker 0: starts at depth 1 (canonical search)
@@ -112,7 +149,7 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
     - Worker 2: starts at depth 1 + 2*LAZY_SMP_DEPTH_OFFSET
     - etc.
     """
-    from chess_engine import (ChessEngine, _SearchControl, TimeControl,
+    from chess_engine import (_SearchControl, TimeControl,
                               get_nn_evaluator_from_pool, return_nn_evaluator_to_pool)
 
     # FIX: Stagger worker starts to reduce contention on pool lock and initial TT access
@@ -125,13 +162,8 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
     # Get an NN evaluator from the pool (should be pre-populated now)
     nn_eval = get_nn_evaluator_from_pool()
 
-    # Create per-worker engine with isolated state and worker_id for move ordering diversity
-    engine = ChessEngine(
-        nn_eval=nn_eval,
-        search_generation=_SearchControl,
-        generation=generation,
-        worker_id=worker_id
-    )
+    # Get engine from pool (keeps persistent board warm) or create new
+    engine = get_engine_from_pool(nn_eval, worker_id, generation)
 
     # Set unique eval noise seed for search diversity
     eval_seed = worker_id * 100003 + generation * 1009
@@ -174,7 +206,7 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
             max_depth=max_depth,
             start_depth=start_depth,
             clear_tt=False,
-            expected_best_moves= expected_best_moves,
+            expected_best_moves=expected_best_moves,
             use_existing_time_control=True,
             on_depth_complete=on_depth_complete,
             suppress_info=True
@@ -184,8 +216,9 @@ def _lazy_smp_worker(worker_id: int, fen: str, max_depth: int, generation: int,
         print(f"info string Worker {worker_id} error: {type(e).__name__}: {e}", flush=True)
         traceback.print_exc()
 
-    # Return NN evaluator to pool for reuse
+    # Return NN evaluator and engine to pools for reuse
     return_nn_evaluator_to_pool(nn_eval)
+    return_engine_to_pool(engine)
 
 
 def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[float] = None,
@@ -233,7 +266,7 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
     _SearchControl.generation = new_gen
     current_generation = new_gen
 
-    # Clear TT if requested (main thread only Ã¢â‚¬â€ before spawning workers)
+    # Clear TT if requested (main thread only ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â before spawning workers)
     if clear_tt:
         transposition_table.clear()
         qs_transposition_table.clear()
@@ -417,7 +450,8 @@ def parallel_find_best_move(fen: str, max_depth: int = 20, time_limit: Optional[
         _mp_diag_print(f"ERROR: Best move {int_to_uci(move_int)} is illegal!")
         return legal_moves_int[0], 0, [legal_moves_int[0]], 0, 0
 
-    # Validate PV only once at the end
+    # FIX #3: Validate PV only once at the end
+    board.set_fen(fen)  # Reset to original position (reuse existing board)
     best_pv_int = validate_pv_int(board, pv_int)
 
     elapsed = time.perf_counter() - start_time
