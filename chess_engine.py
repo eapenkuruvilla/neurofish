@@ -50,9 +50,97 @@ class TimeControl:
 TTEntry = namedtuple("TTEntry", ["depth", "score", "flag", "best_move_int"])
 TT_EXACT, TT_LOWER_BOUND, TT_UPPER_BOUND = 0, 1, 2
 
-transposition_table = {}
-qs_transposition_table = {}
-nn_eval_cache = {}
+
+class ShardedDict:
+    """
+    Lock-reduced shared dictionary using power-of-two sharding.
+
+    Designed for Python 3.14t free-threading.
+    """
+
+    def __init__(self, num_shards: int = 8):
+        if num_shards <= 0 or (num_shards & (num_shards - 1)) != 0:
+            raise ValueError("num_shards must be a power of two")
+
+        self.num_shards = num_shards
+        self.mask = num_shards - 1
+        self.shards = [{} for _ in range(num_shards)]
+
+    def _shard(self, key: int):
+        return self.shards[key & self.mask]
+
+    # --- dict-like interface ---
+
+    def get(self, key, default=None):
+        return self._shard(key).get(key, default)
+
+    def __getitem__(self, key):
+        return self._shard(key)[key]
+
+    def __setitem__(self, key, value):
+        self._shard(key)[key] = value
+
+    def __contains__(self, key):
+        return key in self._shard(key)
+
+    def pop(self, key, default=None):
+        return self._shard(key).pop(key, default)
+
+    def clear(self):
+        for shard in self.shards:
+            shard.clear()
+
+    def __len__(self):
+        return sum(len(s) for s in self.shards)
+
+    # --- optional size control ---
+    def trim(self, max_total_size: int):
+        """
+        Trim across shards to ~75% of max_total_size.
+        """
+        current = len(self)
+        if current <= max_total_size:
+            return
+
+        target = max_total_size * 3 // 4
+        per_shard_target = target // self.num_shards
+
+        for shard in self.shards:
+            if len(shard) > per_shard_target:
+                keys = list(shard.keys())
+                remove_count = len(shard) - per_shard_target
+                for k in keys[:remove_count]:
+                    del shard[k]
+
+
+class ShardedTT(ShardedDict):
+    """
+    Sharded Transposition Table with depth-aware replacement.
+    """
+
+    def store(self, key: int, entry):
+        """
+        Store unconditionally.
+        """
+        self._shard(key)[key] = entry
+
+    def store_if_deeper(self, key: int, entry):
+        """
+        Store only if:
+            - No existing entry
+            - New entry depth >= old depth
+        """
+        shard = self._shard(key)
+        old = shard.get(key)
+        if old is None or entry.depth >= old.depth:
+            shard[key] = entry
+
+
+
+NUM_SHARDS = 8
+transposition_table = ShardedTT(NUM_SHARDS)
+qs_transposition_table = ShardedDict(NUM_SHARDS)
+nn_eval_cache = ShardedDict(NUM_SHARDS)
 
 # Track positions seen in the current game (cleared on ucinewgame)
 game_position_history: dict[int, int] = {}  # zobrist_hash -> count
@@ -356,7 +444,6 @@ def _make_qs_stats():
         "total_nodes": 0,
         "time_cutoffs": 0,
     }
-
 
 # ======================================================================
 # ChessEngine class ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â per-instance state, no thread-local hacks
@@ -1128,9 +1215,13 @@ class ChessEngine:
         else:
             flag = TT_EXACT
 
-        old = transposition_table.get(key)
-        if old is None or depth >= old.depth:
-            transposition_table[key] = TTEntry(depth, max_eval, flag, best_move_int)
+        #old = transposition_table.get(key)
+        #if old is None or depth >= old.depth:
+        #    transposition_table[key] = TTEntry(depth, max_eval, flag, best_move_int)
+        transposition_table.store_if_deeper(
+            key,
+            TTEntry(depth, max_eval, flag, best_move_int)
+        )
 
         return max_eval, best_pv
 
@@ -1198,7 +1289,8 @@ class ChessEngine:
         # Trim nn_eval_cache (safe only when called from main thread / single engine)
         # For Lazy SMP, parallel_find_best_move trims before spawning workers.
         if self._search_generation is None:  # Main thread only
-            control_dict_size(nn_eval_cache, config.MAX_TABLE_SIZE)
+            #control_dict_size(nn_eval_cache, config.MAX_TABLE_SIZE)
+            nn_eval_cache.trim(config.MAX_TABLE_SIZE)
 
         # Initialize board and evaluator
         init_start = time.perf_counter()

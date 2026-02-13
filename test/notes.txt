@@ -120,8 +120,8 @@ Efficiency: 81.5%
 Efficiency: 39.4%
 
 02/12/26
-python 3.14t
-WAC: 267, WAC-mp: 259
+python 3.14t: WAC: 267, WAC-mp: 259
+Sharded TT: WAC-265, WAC-mp-262
 
 
 
