@@ -126,6 +126,7 @@ Sharded TT: WAC-265, WAC-mp-262
 02/13/26
 Adaptive QS depth: WAC-265, WAC-mp-262
 No NN at shallow depths: WAC-261, WAC-mp-263, ELO-2430
+WAC: 257, WAC-mp-265, ELO: 2466
 
 
 
