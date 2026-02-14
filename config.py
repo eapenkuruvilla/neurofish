@@ -195,3 +195,17 @@ def print_overridden_params():
         for key, default, value in _overridden_params:
             print(f"  {key}: {default} -> {value}")
         print("=" * 60)
+
+def configure_multi_core_blas() -> None:
+    if not MULTI_CORE_BLAS:
+        os.environ["OPENBLAS_NUM_THREADS"] = "1"
+        os.environ["MKL_NUM_THREADS"] = "1"
+        os.environ["OMP_NUM_THREADS"] = "1"
+        #print(f"info string Disabling multi-threaded BLAS", flush=True)
+    else:
+        del os.environ['OPENBLAS_NUM_THREADS']
+        del os.environ['MKL_NUM_THREADS']
+        del os.environ['OMP_NUM_THREADS']
+        #print(f"info string Allowing multi-threaded BLAS", flush=True)
+
+configure_multi_core_blas()
