@@ -130,7 +130,7 @@ WAC: 257, WAC-mp-265, ELO: 2466
 
 02/14/26
 BLAS-MP disabled - WAC: 265, WAC-mp-266,
-increased pool size: WAC: 261 , WAC-mp-267,
+Increased pool size: WAC: 261 , WAC-mp-267
 
 
 
