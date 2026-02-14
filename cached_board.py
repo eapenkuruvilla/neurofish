@@ -271,7 +271,7 @@ class CachedBoard:
 
     # OPTIMIZATION: Class-level pool for _CacheState objects
     _cache_pool: List[_CacheState] = []
-    _POOL_MAX_SIZE = 128
+    _POOL_MAX_SIZE = 256
 
     @classmethod
     def _get_pooled_cache(cls) -> _CacheState:
