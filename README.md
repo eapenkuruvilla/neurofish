@@ -119,6 +119,7 @@ neurofish/
 ### Prerequisites
 
 - pyenv and pip
+- pybind11
 - C++ compiler (for Cython extensions)
 
 ### Installation
@@ -137,6 +138,7 @@ neurofish/
    pyenv install 3.14t (Warning: do not install python 3.14t as your main python interpreter as this may break the system; so always use penv to install the 3.14t)
    pyenv local 3.14t
    python3.14t -m venv .venv
+   alias python='python3.14t'
    pip install --upgrade pip
    pip install -r requirements.txt
    source .venv/bin/activate

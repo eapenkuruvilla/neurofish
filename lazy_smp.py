@@ -59,7 +59,7 @@ def init_worker_pool(num_workers: int):
     _result_queue = Queue()
     _pool_initialized = True
 
-    # FIX #1: Pre-populate NN evaluator pool to avoid model loading during search
+    # Pre-populate NN evaluator pool to avoid model loading during search
     # Note: chess_engine.py has a global nn_evaluator that gets used when pool is empty
     # We only need (num_workers - 1) additional evaluators in the pool
     from chess_engine import _nn_eval_pool, _nn_eval_pool_lock, MODEL_PATH
