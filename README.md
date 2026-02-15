@@ -134,7 +134,7 @@ neurofish/
 
    ```bash
    sudo apt update; sudo apt install build-essential libssl-dev libffi-dev zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libreadline-dev libgdbm-dev libsqlite3-dev libbz2-dev -y
-   pyenv install 3.14t
+   pyenv install 3.14t (Warning: do not install python 3.14t as your main python interpreter as this may break the system; so always use penv to install the 3.14t)
    pyenv local 3.14t
    python3.14t -m venv .venv
    pip install --upgrade pip
