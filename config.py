@@ -57,7 +57,7 @@ PONDERING_ENABLED = _env_bool('PONDERING_ENABLED', True)
 # Multiprocessing configuration
 THREADS = _env_int('THREADS', 2)  # 1 or less disables multiprocessing, UCI option "Threads"
 
-LAZY_SMP_MOVE_ORDER_RANDOMNESS = _env_int('LAZY_SMP_MOVE_ORDER_RANDOMNESS', 2)  # ±N centipawns noise (reduced from 5)
+LAZY_SMP_MOVE_ORDER_RANDOMNESS = _env_int('LAZY_SMP_MOVE_ORDER_RANDOMNESS', 10)  # ±N centipawns noise (reduced from 5)
 LAZY_SMP_DEPTH_OFFSET = _env_int('LAZY_SMP_DEPTH_OFFSET', 1)  # Stagger worker starting depths by this amount
 
 MULTI_CORE_BLAS = _env_bool('MULTI_CORE_BLAS', False)

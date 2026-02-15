@@ -79,6 +79,8 @@ _SKIP = {
     'QUIET_CONFIG',
     'PONDERING_ENABLED',                  # UCI Ponder
     'MAX_THREADS',                           # UCI Threads
+    "RESIGN_THRESHOLD",
+    "RESIGN_CONSECUTIVE_MOVES",
     #'MULTI_CORE_BLAS',                       # already registered manually
 }
 

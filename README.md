@@ -2,7 +2,7 @@
 
 NeuroFish is a hybrid chess engine that combines classical alpha–beta search techniques with selective neural network evaluation to produce strong, explainable move choices within fixed time constraints. Unlike pure neural engines or purely handcrafted evaluators, NeuroFish blends the best of both worlds: a fast, well-optimized negamax search core enhanced by a NN-based positional evaluator that is invoked only when it is most informative.
 
-The engine plays at approximately **2500 ELO** rating, making it possibly the highest-rated chess engine written in Python.
+The engine plays at approximately **2400 ELO** rating, making it possibly the highest-rated chess engine written in Python.
 
 **Play against NeuroFish online:** [https://lichess.org/?user=neurofish#friend](https://lichess.org/?user=neurofish#friend)
 
@@ -85,7 +85,6 @@ neurofish/
 ├── docs/                    # Documentation
 │   ├── parameter_tuning_guide.md
 │   └── time_depth_management_guide.md
-├── environment.yml          # Conda environment specification
 ├── lazy_smp.py              # Lazy SMP parallel search implementation
 ├── libs/                    # Compiled shared libraries (.so files)
 ├── model/                   # Trained neural network models
@@ -119,9 +118,8 @@ neurofish/
 
 ### Prerequisites
 
-- Python 3.8+
-- Conda (recommended) or pip
-- C++ compiler (optional, for Cython extensions)
+- pyenv and pip
+- C++ compiler (for Cython extensions)
 
 ### Installation
 
@@ -132,22 +130,25 @@ neurofish/
    cd neurofish
    ```
 
-2. **Create the conda environment:**
+2. **Create python virtual environment:**
 
    ```bash
-   conda env create -f environment.yml
-   conda activate neurofish
-   ```
-   - If anaconda is not available on your machine, you may install the python packages using the command 'pip install -r requirements.txt'
+   sudo apt update; sudo apt install build-essential libssl-dev libffi-dev zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libreadline-dev libgdbm-dev libsqlite3-dev libbz2-dev -y
+   pyenv install 3.14t
+   pyenv local 3.14t
+   python3.14t -m venv .venv
+   pip install --upgrade pip
+   pip install -r requirements.txt
+   source .venv/bin/activate
+   ``` 
    
-   
-3. **Build Cython extensions (recommended for performance):**
+3. **Build Cython extensions:**
 
    ```bash
    ./build.sh
    ```
 
-4. **Build C++ backend (optional, for additional performance):**
+4. **Build C++ backend:**
 
    ```bash
    cd cpp_board
@@ -157,7 +158,7 @@ neurofish/
    
 5. **Build or download the neural network models:**
    
-   - Follow the instructions given in [nn_train/README](nn_train/README.md) to build the NN models if you are willing spend couple of weeks.
+   - Follow the instructions given in [nn_train/README](nn_train/README.md) to build the NN models if you are willing spend a couple of weeks.
    - Alternatively you can download a prebuilt NNUE model from [OneDrive](https://1drv.ms/u/c/4c1b0c9c6e5795c7/IQA7Y1iU7XDJR5qi1FaLGzTRAdRsNe5VygcI0qM0qQb_4Yo?e=wuF7zw).
      - Copy the downloaded nnue.pt to model/nnue directory
    - A third option is to set IS_NN_ENABLED=False in the config.py file, but be willing to sacrifice around 400 ELOs of engine's strength.
@@ -202,7 +203,7 @@ The engine speaks the UCI (Universal Chess Interface) protocol and can be used w
 
 ```bash
 # Activate the environment
-conda activate neurofish
+source .venv/bin/activate
 
 # Run the UCI interface
 ./uci.sh
@@ -235,7 +236,7 @@ conda activate neurofish
 | Pondering                      | +90        |
 | BLAS multi-core, single thread | +0         |
 
-**Analysis:** The two largest gains come from reducing Python interpreter overhead: Cython-optimized NN operations (+107) and C++ move generation (+95) together contribute over 200 ELO, underscoring that raw execution speed is the dominant bottleneck in a Python chess engine. Faster evaluation and move generation translate directly into deeper search within the same time budget. INT8 quantization (+46) further accelerates NN inference by leveraging narrower integer arithmetic, while INT16 quantization (-47) regresses because its wider data types reduce SIMD throughput without a compensating improvement in evaluation accuracy. BLAS multi-core (+35) provides a modest gain by parallelizing the matrix operations within NN inference—this benefit is orthogonal to search-level parallelism and stacks with single-threaded optimizations.
+**Analysis:** The largest gains come from reducing Python interpreter overhead and optimizing neural network inference. INT8 quantization provides the biggest single improvement (+178 ELO) by leveraging narrower integer arithmetic for faster SIMD operations. Cython-optimized NN operations (+107) and C++ move generation (+95) together contribute over 200 ELO, underscoring that raw execution speed is the dominant bottleneck in a Python chess engine. INT16 quantization (+107) provides similar gains to Cython by reducing memory bandwidth compared to FP32 while maintaining sufficient precision. Pondering (+90) allows the engine to think on the opponent's time, effectively increasing search depth. BLAS multi-core (+0) shows no measurable gain because the NN inference matrices are too small to benefit from parallelization overhead, and search-level parallelism via Lazy SMP is the more effective approach.
 
 ### Lazy SMP Performance
 
@@ -248,21 +249,19 @@ conda activate neurofish
 | 4   | 3.14t (Free Threading)                       | +163     |
 
 
-**Analysis:** Two threads yield a modest +14 ELO over single-threaded search, but scaling to four threads regresses by −27 ELO below the single-threaded baseline. This is a direct consequence of Python's Global Interpreter Lock (GIL): while NumPy and the NN inference layers release the GIL during heavy computation, the search logic itself—move ordering, alpha-beta recursion, transposition table lookups—runs under the GIL and becomes a contention bottleneck as thread count increases. At two threads the diversity benefit of Lazy SMP (workers exploring slightly different search trees and populating the shared transposition table) narrowly outweighs the GIL overhead, but at four threads the contention cost dominates. The optimal configuration for NeuroFish is therefore two threads; meaningful scaling beyond this would require moving the core search loop to C/C++ or to a GIL-free runtime.
+**Analysis:** The Lazy SMP results demonstrate the critical impact of Python's Global Interpreter Lock (GIL) on parallel search. With standard Python 3.14, two threads actually regress by −84 ELO because the GIL serializes the search logic—move ordering, alpha-beta recursion, and transposition table operations—creating contention that outweighs any benefit from parallel exploration. However, Python 3.14t with free-threading eliminates this bottleneck entirely: two threads yield a dramatic +210 ELO gain as workers can truly execute in parallel, populating the shared transposition table with diverse search results. The gains diminish with additional threads (+181 at 3 threads, +163 at 4 threads), likely due to increased transposition table contention and diminishing returns from search diversity. The optimal configuration for NeuroFish is two threads with Python 3.14t free-threading.
 
 ## Future Work
 
-### The 2500 ELO Ceiling
+### The 2400 ELO Ceiling
 
-The ~2500 ELO rating likely represents the practical ceiling for a Python-based chess engine. The primary limitations are:
+The ~2400 ELO rating likely represents the practical ceiling for a Python-based chess engine. The primary limitations are:
 
 1. **Interpreted Language Overhead**: Python's interpreted nature adds significant overhead compared to compiled languages. Each operation involves type checking, reference counting, and interpreter dispatch.
 
-2. **Global Interpreter Lock (GIL)**: Python's GIL prevents true parallel execution of Python bytecode, limiting the effectiveness of multithreading and making it impossible to share data structures efficiently between threads. The Lazy SMP results above illustrate this directly—scaling beyond two threads produces negative returns.
+2. **Memory Management**: Python's object model and garbage collection add latency that compounds during deep searches with millions of nodes.
 
-3. **Memory Management**: Python's object model and garbage collection add latency that compounds during deep searches with millions of nodes.
-
-4. **Function Call Overhead**: The high cost of Python function calls limits the effectiveness of highly recursive algorithms like negamax search.
+3. **Function Call Overhead**: The high cost of Python function calls limits the effectiveness of highly recursive algorithms like negamax search.
 
 ### Potential Next Steps
 
@@ -280,8 +279,8 @@ Developing a C++ engine leveraging the architectural insights and techniques ref
 - **[python-chess](https://github.com/niklasf/python-chess)** — Pure Python chess library providing the core board representation
 - **[pybind11](https://github.com/pybind/pybind11)** — C++/Python interoperability for the C++ backend
 - **[Lichess.org](https://lichess.org)** — Source of the 1 billion training positions
-- **[Vultr.com](https://lichess.org)** — GPU and cloud resources for the AI training
-- **[JetBrains PyCharm](https://lichess.org)** — IDE for the code development
+- **[Vultr.com](https://www.vultr.com)** — GPU and cloud resources for the AI training
+- **[JetBrains PyCharm](https://www.jetbrains.com/pycharm/)** — IDE for the code development
 
 ### AI Assistance
 
